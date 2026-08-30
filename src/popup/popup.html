@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="app-head">
+      <div class="brand">
+        <img class="brand-icon" src="../../assets/icon32.png" alt="" />
+        <div class="brand-copy">
+          <div class="brand-line">
+            <h1>Just Translate</h1>
+            <span class="ver" id="ver">v–</span>
+          </div>
+          <p class="sub">只做翻译 · 用你自己的模型</p>
+        </div>
+      </div>
+      <div class="head-actions">
+        <span class="pair" id="pair">auto → 简体中文</span>
+        <button type="button" class="icon-btn" id="openSettings" title="设置" aria-label="设置">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.6a2 2 0 0 1-1 1.7l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.6a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2Z"/></svg>
+        </button>
+      </div>
+    </header>
+
+
+    <main>
+      <div class="view" id="homeView">
+        <section class="task-card" id="taskCard">
+          <div class="task-head">
+            <div>
+              <span class="eyebrow">当前页面</span>
+              <h2>翻译当前网页</h2>
+            </div>
+            <span class="task-shortcut">Alt+Shift+T</span>
+          </div>
+
+          <label class="field target-field">
+            <span class="label">目标语言</span>
+            <input id="targetLang" class="human" list="langHints" placeholder="简体中文" />
+            <datalist id="langHints">
+              <option value="简体中文"></option>
+              <option value="繁體中文"></option>
+              <option value="English"></option>
+              <option value="日本語"></option>
+              <option value="Français"></option>
+            </datalist>
+          </label>
+
+          <div class="field">
+            <span class="label">显示方式</span>
+            <select id="displayMode" class="sr-only" aria-label="显示方式">
+              <option value="bilingual">双语对照</option>
+              <option value="translation">仅译文</option>
+              <option value="original">仅原文</option>
+            </select>
+            <div class="segment" id="displaySegments" role="group" aria-label="显示方式">
+              <button type="button" class="seg-btn" data-mode="bilingual">双语</button>
+              <button type="button" class="seg-btn" data-mode="translation">译文</button>
+              <button type="button" class="seg-btn" data-mode="original">原文</button>
+            </div>
+          </div>
+
+          <p class="status" id="status">填好模型信息就可以开始</p>
+          <button type="button" id="go" class="go" disabled>
+            <span class="go-fill" id="goFill"></span>
+            <span class="go-text" id="goText">翻译当前页面</span>
+          </button>
+          <button type="button" id="toggle" class="legacy-toggle" aria-hidden="true" tabindex="-1">显示：双语</button>
+          <div class="task-foot">
+            <span class="quiet-dot"></span>
+            <span>自动读取页面语境 · 安全范围内优先整页</span>
+          </div>
+        </section>
+
+        <section class="surface context-card" id="contextCard">
+          <div class="section-head">
+            <div>
+              <span class="section-label">页面语境</span>
+              <strong id="peekContext">自动读取</strong>
+            </div>
+            <button type="button" id="preflight" class="text-btn">重新读取</button>
+          </div>
+          <div class="context-readout">
+            <p class="detected" id="detected"></p>
+            <p class="page-principle" id="pagePrinciple" hidden></p>
+            <p class="hint profile-summary" id="profileInfo"></p>
+
+            <details class="profile-disclosure">
+              <summary>查看翻译约束</summary>
+              <div class="rules-tree" id="rulesTree"></div>
+              <div class="ctx-foot profile-foot">
+                <span class="rt-legend"><i data-src="auto"></i>自动 <i data-src="user"></i>规则</span>
+                <button type="button" id="adoptProfile" class="text-btn">复制到页面规则</button>
+              </div>
+            </details>
+
+            <button type="button" id="goCalibrate" class="inline-link">调整页面规则 →</button>
+          </div>
+        </section>
+
+        <section class="consistency-card" id="consistencyCard">
+          <div class="consistency-copy">
+            <span class="consistency-kicker">观测</span>
+            <div>
+              <strong>语义一致性观测</strong>
+              <p class="field-note" id="consistencyNote"></p>
+            </div>
+          </div>
+          <label class="switch" title="开启语义一致性观测">
+            <input type="checkbox" id="semanticConsistency" />
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <button type="button" id="copyConsistency" class="text-btn consistency-copy-btn" hidden>复制数据</button>
+        </section>
+      </div>
+
+      <div class="view settings-view" id="settingsView" hidden>
+        <div class="settings-head">
+          <button type="button" class="back-btn" id="closeSettings" aria-label="返回翻译">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+            返回
+          </button>
+          <div>
+            <h2>设置</h2>
+            <p>开关与外观即时保存；模型和规则确认后再应用</p>
+          </div>
+        </div>
+
+        <nav class="settings-tabs" id="settingsTabs" aria-label="设置分类">
+          <button type="button" class="settings-tab" data-tab="model">模型</button>
+          <button type="button" class="settings-tab" data-tab="style">外观</button>
+          <button type="button" class="settings-tab" data-tab="rules">页面规则</button>
+          <button type="button" class="settings-tab" data-tab="tools">高级</button>
+        </nav>
+
+        <section class="settings-panel" data-panel="model">
+          <div class="panel-title">
+            <div><span class="section-label">模型与 API</span><strong id="peekModel"></strong></div>
+          </div>
+
+          <label class="field">
+            <span class="label">接口协议</span>
+            <select id="providerId" class="human"></select>
+          </label>
+
+          <label class="field">
+            <span class="label">API 地址</span>
+            <input id="apiBase" class="machine" type="url" spellcheck="false" placeholder="https://api.deepseek.com" />
+            <span class="field-note" id="baseNote"></span>
+          </label>
+
+          <label class="field">
+            <span class="label">API Key <a id="keyLink" class="get-key" target="_blank" rel="noopener" hidden>去哪里拿 →</a></span>
+            <span class="with-action">
+              <input id="apiKey" class="machine" type="password" spellcheck="false" placeholder="sk-..." autocomplete="off" />
+              <button type="button" id="copyApiKey" class="ghost">复制</button>
+              <button type="button" id="reveal" class="ghost">显示</button>
+            </span>
+            <span class="field-note" id="keyNote"></span>
+          </label>
+
+          <label class="field">
+            <span class="label">模型</span>
+            <span class="with-action">
+              <input id="model" class="machine" list="modelHints" spellcheck="false" placeholder="deepseek-v4-flash" />
+              <button type="button" id="fetchModels" class="ghost">拉取</button>
+            </span>
+            <datalist id="modelHints"></datalist>
+            <span class="field-note" id="modelNote"></span>
+          </label>
+
+          <p class="hint" id="providerHint"></p>
+          <p class="hint" id="accountsHint"></p>
+          <div class="panel-actions split-actions">
+            <button type="button" id="test" class="ghost">测试连接</button>
+            <span class="apply-note" id="modelApplyNote"></span>
+            <button type="button" id="applyModel" class="primary-soft" disabled>应用模型设置</button>
+          </div>
+        </section>
+
+        <section class="settings-panel" data-panel="style" hidden>
+          <div class="panel-title">
+            <div><span class="section-label">显示与外观</span><strong id="peekStyle"></strong></div>
+          </div>
+
+          <label class="field">
+            <span class="label">标记样式</span>
+            <select id="translationStyle" class="human">
+              <option value="bar">左边线</option>
+              <option value="underline">虚线下划线</option>
+              <option value="tint">淡背景</option>
+              <option value="plain">无标记</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span class="label">译文字色</span>
+            <select id="translationColor" class="human">
+              <option value="inherit">跟随原文</option>
+              <option value="muted">柔和（原文的七成浓度）</option>
+              <option value="accent">强调色</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+
+          <div class="grid color-row" id="customColors" hidden>
+            <label class="field"><span class="label">字色 · 浅色页</span><input id="textColorLight" type="color" /></label>
+            <label class="field"><span class="label">字色 · 深色页</span><input id="textColorDark" type="color" /></label>
+          </div>
+
+          <div class="grid color-row">
+            <label class="field"><span class="label">标记色 · 浅色页</span><input id="accentColorLight" type="color" /></label>
+            <label class="field"><span class="label">标记色 · 深色页</span><input id="accentColorDark" type="color" /></label>
+          </div>
+
+          <label class="field">
+            <span class="label">译文字体 <em class="sub-note">留空用内置中文字体栈</em></span>
+            <input id="translationFont" class="machine" spellcheck="false" placeholder="Noto Sans SC, sans-serif" />
+          </label>
+
+          <div class="setting-row">
+            <div><strong>页面悬浮球</strong><span>随时从网页右侧启动翻译</span></div>
+            <label class="switch"><input type="checkbox" id="floatButton" /><span class="switch-track" aria-hidden="true"></span></label>
+          </div>
+          <div class="fab-pos-row" id="fabPosRow">
+            <span class="sub-note">默认位置</span>
+            <select id="floatPosition" class="human tiny-select">
+              <option value="bottom">右下</option>
+              <option value="middle">右中</option>
+              <option value="top">右上</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="settings-panel" data-panel="rules" hidden>
+          <div class="panel-title"><div><span class="section-label">页面规则</span><strong>只在页面有特殊要求时修改</strong></div></div>
+
+          <section class="subsec">
+            <h3 class="subsec-title">本页语境 <em class="scope-tag scope-page">本页</em></h3>
+            <label class="field">
+              <span class="label">页面类型</span>
+              <select id="presetId" class="human"></select>
+            </label>
+
+            <div class="ctx-card">
+              <p class="ctx-why">留空完全正常。只有页面有特殊背景、固定术语或歧义时，再补充这里。</p>
+              <div class="chips" id="bgChips"></div>
+              <textarea id="background" class="human" rows="3" maxlength="500" placeholder="例如：这是 Wayland 技术文档；命令和参数保留英文，同一术语全文一致"></textarea>
+              <div class="ctx-foot">
+                <span class="counter" id="bgCount">0 / 500</span>
+                <button type="button" id="convertRules" class="text-btn">转成规则</button>
+              </div>
+            </div>
+
+            <div class="rules-box">
+              <div class="ctx-head"><span class="ctx-title">精确规则 <em class="scope-tag scope-exact">可选</em></span></div>
+              <textarea id="rulesText" class="machine" rows="5" spellcheck="false" placeholder="领域: Wayland, Linux 图形栈&#10;锁定:&#10;  compositor: 合成器&#10;风险词:&#10;  output: 指显示输出设备，不是输出结果"></textarea>
+              <p class="field-note" id="rulesNote"></p>
+            </div>
+
+            <div class="ctx-foot site-rule-foot">
+              <span class="ctx-scope" id="ctxScope">仅本页</span>
+              <span class="ctx-actions">
+                <button type="button" id="unpinSite" class="text-btn" hidden>取消固定</button>
+                <button type="button" id="pinSite" class="text-btn">固定到本站</button>
+              </span>
+            </div>
+            <div class="setting-row compact-row">
+              <div><strong>本站自动翻译</strong><span>需要先固定到本站</span></div>
+              <label class="switch"><input type="checkbox" id="siteAuto" /><span class="switch-track" aria-hidden="true"></span></label>
+            </div>
+          </section>
+
+          <section class="subsec">
+            <h3 class="subsec-title">全局偏好 <em class="scope-tag scope-global">全局</em></h3>
+            <label class="field">
+              <span class="label">附加指令</span>
+              <textarea id="customPrompt" class="human" rows="2" placeholder="例如：术语沿用大陆惯例；保留英文缩写"></textarea>
+            </label>
+            <p class="hint">长期偏好写在这里；页面自己的术语优先放在本页规则中。</p>
+            <details class="example">
+              <summary>查看术语规则示例</summary>
+              <pre>For legal text, preserve defined legal terms
+consistently across the page. Use:
+- certificated security = 凭证式证券
+- bailee = 受托保管人
+- article = 编 / section = 条 / subsection = 款</pre>
+            </details>
+          </section>
+
+          <div class="panel-actions split-actions rule-apply-actions">
+            <span class="apply-note" id="rulesApplyNote"></span>
+            <button type="button" id="applyRules" class="primary-soft" disabled>应用规则</button>
+          </div>
+        </section>
+
+        <section class="settings-panel" data-panel="tools" hidden>
+          <div class="panel-title"><div><span class="section-label">高级</span><strong>低频工具与性能参数</strong></div></div>
+
+          <section class="advanced-block">
+            <h3>临时翻译</h3>
+            <p class="hint">只翻这一段，并沿用当前页面的语境与规则。</p>
+            <label class="field">
+              <span class="label">原文</span>
+              <textarea id="labInput" class="human" rows="3" placeholder="粘一段内容；在页面上双击一条译文也会把原文带过来"></textarea>
+            </label>
+            <div class="panel-actions"><button type="button" id="labRun" class="ghost">翻译一次</button></div>
+            <div id="labOut" hidden>
+              <span class="label">译文</span>
+              <p class="lab-text" id="labResult"></p>
+            </div>
+            <p class="field-note" id="labNote"></p>
+          </section>
+
+          <section class="advanced-block">
+            <h3>提取与性能</h3>
+            <div class="grid">
+              <label class="field"><span class="label">并发</span><input id="concurrency" class="machine" type="number" min="1" max="8" /></label>
+              <label class="field"><span class="label">每批字符</span><input id="maxCharsPerChunk" class="machine" type="number" min="500" max="12000" step="100" /></label>
+            </div>
+
+            <div class="switch-list">
+              <label class="setting-row compact-row"><div><strong>只翻正文区</strong><span>跳过导航与侧栏</span></div><span class="switch"><input type="checkbox" id="contentRootOnly" /><span class="switch-track"></span></span></label>
+              <label class="setting-row compact-row"><div><strong>过滤噪音</strong><span>跳过语言条目与放不下译文的容器</span></div><span class="switch"><input type="checkbox" id="smartFilter" /><span class="switch-track"></span></span></label>
+              <label class="setting-row compact-row"><div><strong>优先整页翻译</strong><span>不同模型限制不同；正文 ≤12,000 字且 ≤80 段时整页提交，超限自动分块。关闭后始终分块</span></div><span class="switch"><input type="checkbox" id="wholePageTranslation" /><span class="switch-track"></span></span></label>
+              <label class="setting-row compact-row"><div><strong>Beta：跨批先例注入</strong><span>仅在精确局部触发器重复时向后续批次提供旧译法；命中率低，默认关闭</span></div><span class="switch"><input type="checkbox" id="semanticPrecedent" /><span class="switch-track"></span></span></label>
+              <label class="setting-row compact-row"><div><strong>复用缓存译文</strong></div><span class="switch"><input type="checkbox" id="useCache" /><span class="switch-track"></span></span></label>
+              <label class="setting-row compact-row"><div><strong>自动读取整页语境</strong></div><span class="switch"><input type="checkbox" id="autoPreflight" /><span class="switch-track"></span></span></label>
+              <label class="setting-row compact-row"><div><strong>调试日志</strong><span>在控制台输出运行信息</span></div><span class="switch"><input type="checkbox" id="debug" /><span class="switch-track"></span></span></label>
+            </div>
+
+            <label class="field">
+              <span class="label">跳过选择器</span>
+              <input id="skipSelectors" class="machine" spellcheck="false" placeholder=".sidebar, #comments" />
+            </label>
+          </section>
+
+          <section class="advanced-block maintenance-block">
+            <h3>维护与导出</h3>
+            <div class="action-grid">
+              <button type="button" id="exportMd" class="ghost">导出对照 MD</button>
+              <button type="button" id="clearCache" class="ghost">仅清缓存 <em id="cacheCount"></em></button>
+              <button type="button" id="resetAll" class="ghost danger-soft">清缓存与页面语境</button>
+            </div>
+          </section>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
