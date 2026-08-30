@@ -15,6 +15,8 @@ import { Queue, withRetry } from './queue.js';
 import { cacheKey, getCached, initCache, putCached } from './cache.js';
 import { filterChatModels, parseModelList } from '../shared/provider-help.js';
 import { hashString } from '../shared/hash.js';
+import { resolveMachineTarget } from '../shared/machine-languages.js';
+import { translateMachineWithRecovery } from './machine-translation.js';
 
 /**
  * 翻译缓存的唯一策略层。
@@ -68,6 +70,20 @@ export function wholePageCacheItems(items) {
   return list.map((item, index) => ({
     i: item.i,
     text: `whole-page:v1:${pageHash}:${index}:${String(item.text || '')}`
+  }));
+}
+
+/** 机器翻译的译法受同批正文与邻接语境影响，因此缓存也必须绑定完整批次快照。 */
+export function machineBatchCacheItems(items, context = {}) {
+  const list = Array.isArray(items) ? items : [];
+  const batchHash = hashString(JSON.stringify({
+    texts: list.map((item) => String(item?.text || '')),
+    context: String(context?.mtContext || ''),
+    wholePage: Boolean(context?.wholePage)
+  }));
+  return list.map((item, index) => ({
+    i: item.i,
+    text: `machine-batch:v1:${batchHash}:${index}:${String(item.text || '')}`
   }));
 }
 
@@ -139,6 +155,9 @@ export async function translateChunk({
   const background = context.background ?? settings.background ?? '';
   const profile = context.profile || null;
   const provider = getProvider(settings.providerId);
+  if (provider.kind === 'mt') {
+    return translateMachineChunk({ items, context, settings, provider, sessionId, bypassCache });
+  }
   const fingerprint = promptFingerprint({
     presetId,
     customPrompt: settings.customPrompt,
@@ -219,6 +238,82 @@ export async function translateChunk({
     items: results,
     failed,
     usage: usageAcc.input || usageAcc.output ? usageAcc : null,
+    runtime
+  };
+}
+
+async function translateMachineChunk({ items, context, settings, provider, sessionId, bypassCache }) {
+  const wire = wireFor(provider);
+  const targetLang = resolveMachineTarget(settings.targetLang, provider.id);
+  const runtime = {
+    translateRequestCount: 0,
+    splitRetryCount: 0,
+    wholePageCacheHit: false,
+    boundaryRecoveryCount: 0,
+    machineContextChars: 0
+  };
+  const fingerprint = hashString(JSON.stringify({
+    engine: 'machine-translation:v1',
+    providerId: provider.id,
+    targetLang
+  }));
+  const cachePolicy = createTranslationCachePolicy({ settings, fingerprint });
+  const virtualItems = machineBatchCacheItems(items, context);
+
+  if (settings.useCache && !bypassCache) {
+    const cached = cachePolicy.lookup(virtualItems);
+    if (!cached.misses.length) {
+      runtime.wholePageCacheHit = Boolean(context?.wholePage);
+      return {
+        items: items.map((item) => ({ i: item.i, t: cached.hits.get(item.i).t, cached: true })),
+        failed: [],
+        usage: null,
+        runtime
+      };
+    }
+  }
+
+  const signal = signalFor(sessionId);
+  runtime.machineContextChars = String(context?.mtContext || '').length;
+  const request = (text, depth = 0) =>
+    queue.add(
+      () =>
+        withRetry(
+          async () => {
+            runtime.translateRequestCount++;
+            if (depth > 0) runtime.splitRetryCount++;
+            const res = await wire.translate({
+              base: settings.apiBase,
+              text,
+              targetLang,
+              signal: AbortSignal.any([signal, AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS)])
+            });
+            return res.text;
+          },
+          { signal, onRetry: (n, e, ms) => log(`机器翻译重试第 ${n} 次（${e.message}），${ms | 0}ms 后`) }
+        ),
+      signal
+    );
+
+  const translated = await translateMachineWithRecovery({
+    items,
+    context: String(context?.mtContext || ''),
+    request,
+    runtime
+  });
+
+  const byId = new Map(translated.items.map((item) => [item.i, item]));
+  if (settings.useCache && !translated.failed.length && translated.items.length === items.length) {
+    for (const virtual of virtualItems) {
+      const hit = byId.get(virtual.i);
+      if (hit) cachePolicy.store(virtual.text, hit.t);
+    }
+  }
+
+  return {
+    items: translated.items.map((item) => ({ i: item.i, t: item.t, cached: false })),
+    failed: translated.failed,
+    usage: null,
     runtime
   };
 }
@@ -336,6 +431,7 @@ async function requestWithSplit({ items, context, settings, signal, usageAcc, ru
 /** 翻译预检：整页摘要一次调用，产出文档画像 */
 export async function runPreflight({ digest, context, settings, sessionId }) {
   const provider = getProvider(settings.providerId);
+  if (provider.kind === 'mt') throw new Error('免 Key 基础翻译不支持页面预检');
   const wire = wireFor(provider);
   const signal = signalFor(sessionId);
   const { system, user } = buildPreflightMessages({
@@ -382,6 +478,7 @@ export async function runPreflight({ digest, context, settings, sessionId }) {
 /** 自然语言 → 结构化规则。返回可读文本，交给用户过目和手改。 */
 export async function convertRules({ text, context, settings }) {
   const provider = getProvider(settings.providerId);
+  if (provider.kind === 'mt') throw new Error('免 Key 基础翻译不支持把自然语言转换成规则');
   const wire = wireFor(provider);
   const { system, user } = buildRuleMessages({ text, context, targetLang: settings.targetLang });
   const res = await wire.complete({
@@ -410,6 +507,7 @@ export async function convertRules({ text, context, settings }) {
 /** 拉取服务商的模型清单，省得用户去翻文档抄模型名 */
 export async function fetchModels(settings) {
   const provider = getProvider(settings.providerId);
+  if (provider.kind === 'mt') return { ok: false, error: { message: '基础翻译引擎没有可选择的模型' } };
   const wire = wireFor(provider);
   if (typeof wire.listModels !== 'function') {
     return { ok: false, error: { message: '这个接口协议不支持列出模型' } };
@@ -429,6 +527,16 @@ export async function fetchModels(settings) {
 export async function testConnection(settings) {
   const provider = getProvider(settings.providerId);
   const wire = wireFor(provider);
+  if (provider.kind === 'mt') {
+    const targetLang = resolveMachineTarget(settings.targetLang, provider.id);
+    const res = await wire.translate({
+      base: settings.apiBase,
+      text: 'Hello',
+      targetLang,
+      signal: AbortSignal.timeout(30000)
+    });
+    return { ok: true, echoed: String(res.text).slice(0, 60) };
+  }
   const res = await wire.complete({
     base: settings.apiBase,
     apiKey: settings.apiKey,

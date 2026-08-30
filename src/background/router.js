@@ -38,7 +38,7 @@ function settingsWithPanelOverride(base, override = {}, extra = {}) {
 async function preflight(tab) {
   const settings = await getSettings();
   if (!isConfigured(settings, getProvider(settings.providerId))) {
-    return { ok: false, code: 'not-configured', error: { message: '先填写 API 地址、Key 和模型' } };
+    return { ok: false, code: 'not-configured', error: { message: '先配置翻译引擎' } };
   }
   if (!(await hasApiPermission(settings.apiBase))) {
     return { ok: false, code: 'no-permission', error: { message: '还没授权访问该 API 域名' } };
@@ -91,7 +91,7 @@ export const handlers = {
     const baseSettings = await getSettings();
     const settings = settingsWithPanelOverride(baseSettings, payload.settingsOverride, { customPrompt: payload.customPrompt });
     const provider = getProvider(settings.providerId);
-    if (!isConfigured(settings, provider)) return { ok: false, error: { message: '先配置好模型' } };
+    if (!isConfigured(settings, provider)) return { ok: false, error: { message: '先配置好翻译引擎' } };
     if (!(await hasApiPermission(settings.apiBase))) {
       return { ok: false, code: 'no-permission', error: { message: '还没授权访问该 API 域名' } };
     }
