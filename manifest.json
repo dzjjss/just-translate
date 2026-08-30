@@ -1,0 +1,84 @@
+{
+  "manifest_version": 3,
+  "name": "Just Translate",
+  "version": "15.0",
+  "description": "只做翻译：自带模型的沉浸式双语网页翻译。多服务商 Key 并存，页面语境可控，术语一致。",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "scripting",
+    "activeTab"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Just Translate",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "assets/icon16.png",
+      "32": "assets/icon32.png",
+      "48": "assets/icon48.png",
+      "128": "assets/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "assets/icon16.png",
+    "32": "assets/icon32.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+T"
+      },
+      "description": "打开 Just Translate 面板"
+    },
+    "translate-page": {
+      "suggested_key": {
+        "default": "Alt+Shift+T"
+      },
+      "description": "翻译当前页面 / 停止翻译"
+    },
+    "toggle-translations": {
+      "suggested_key": {
+        "default": "Alt+Shift+O"
+      },
+      "description": "显示 / 隐藏译文"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/content/*.js",
+        "src/shared/*.js",
+        "src/prompt/*.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/content/loader.js"
+      ],
+      "css": [
+        "assets/content.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
