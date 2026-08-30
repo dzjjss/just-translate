@@ -10,6 +10,8 @@ export function createTranslationScheduler({
   session,
   maxChars = 2800,
   wholePage = false,
+  wholePageMaxSourceChars = LIMITS.WHOLE_PAGE_MAX_SOURCE_CHARS,
+  wholePageMaxItems = LIMITS.WHOLE_PAGE_MAX_ITEMS,
   send,
   priority = null,
   onPhase = () => {},
@@ -41,7 +43,13 @@ export function createTranslationScheduler({
 
     // 首轮 gate 放行时对完整扫描快照做一次确定性判断。决策在会话内锁定：
     // 后来出现的动态节点不能冒充“全文”，因此只继续沿用分块调度。
-    if (!modePlan) modePlan = decideTranslationMode(pending, { preferWholePage });
+    if (!modePlan) {
+      modePlan = decideTranslationMode(pending, {
+        preferWholePage,
+        maxSourceChars: wholePageMaxSourceChars,
+        maxItems: wholePageMaxItems
+      });
+    }
     if (modePlan.translationMode === 'whole-page' && !firstBatchDone) {
       const chunk = pending;
       pending = [];

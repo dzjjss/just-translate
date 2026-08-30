@@ -16,6 +16,7 @@ import { classifyRuntimeConfigChange } from '../shared/settings.js';
 import { createTermTelemetry, extractRepeatedSourceTerms, matchTrackedTermRows } from './term-consistency.js';
 import { createSemanticMemory } from './semantic-memory.js';
 import { hashString } from '../shared/hash.js';
+import { buildMachineContext } from './machine-context.js';
 
 /**
  * 页面侧控制器。它拥有 DOM 与调度，但完全不知道 API Key、供应商、prompt 长什么样。
@@ -53,7 +54,9 @@ function createTranslationRuntime() {
     unitCount: 0,
     translateRequestCount: 0,
     splitRetryCount: 0,
-    wholePageCacheHit: false
+    wholePageCacheHit: false,
+    boundaryRecoveryCount: 0,
+    machineContextChars: 0
   };
 }
 
@@ -62,6 +65,8 @@ function makeScheduler(session) {
     session,
     maxChars: app.config?.maxCharsPerChunk,
     wholePage: app.config?.wholePageTranslation,
+    wholePageMaxSourceChars: app.config?.wholePageMaxSourceChars,
+    wholePageMaxItems: app.config?.wholePageMaxItems,
     send: sendChunk,
     // 视口附近的段优先出队。这是取批瞬间的一次几何读取，不是登记状态。
     priority: (unit) => isNearViewport(unit.el),
@@ -174,7 +179,15 @@ async function sendChunk(
     trackedTerms,
     semanticMemory: memoryHints,
     sectionPath: chunk[0]?.path || '',
-    wholePage: Boolean(wholePage)
+    wholePage: Boolean(wholePage),
+    mtContext: app.config?.engineKind === 'mt' && !wholePage
+      ? buildMachineContext({
+          units: [...session.units.values()],
+          chunk,
+          title: app.context?.title || '',
+          sectionPath: chunk[0]?.path || ''
+        })
+      : ''
   };
   try {
     const res = await chrome.runtime.sendMessage({
@@ -214,6 +227,8 @@ async function sendChunk(
     translationRuntime.splitRetryCount += Number(res.runtime?.splitRetryCount) || 0;
     translationRuntime.wholePageCacheHit =
       translationRuntime.wholePageCacheHit || Boolean(res.runtime?.wholePageCacheHit);
+    translationRuntime.boundaryRecoveryCount += Number(res.runtime?.boundaryRecoveryCount) || 0;
+    translationRuntime.machineContextChars += Number(res.runtime?.machineContextChars) || 0;
 
     const failedIds = new Set(res.failed || []);
     const byId = new Map((res.items || []).map((it) => [it.i, it]));
