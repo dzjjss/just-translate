@@ -14,7 +14,7 @@
             <h1>Just Translate</h1>
             <span class="ver" id="ver">v–</span>
           </div>
-          <p class="sub">只做翻译 · 用你自己的模型</p>
+          <p class="sub">只做翻译 · 自带模型或免 Key</p>
         </div>
       </div>
       <div class="head-actions">
@@ -63,7 +63,7 @@
             </div>
           </div>
 
-          <p class="status" id="status">填好模型信息就可以开始</p>
+          <p class="status" id="status">选择翻译引擎后就可以开始</p>
           <button type="button" id="go" class="go" disabled>
             <span class="go-fill" id="goFill"></span>
             <span class="go-text" id="goText">翻译当前页面</span>
@@ -71,7 +71,7 @@
           <button type="button" id="toggle" class="legacy-toggle" aria-hidden="true" tabindex="-1">显示：双语</button>
           <div class="task-foot">
             <span class="quiet-dot"></span>
-            <span>自动读取页面语境 · 安全范围内优先整页</span>
+            <span id="taskFootText">自动读取页面语境 · 安全范围内优先整页</span>
           </div>
         </section>
 
@@ -125,12 +125,12 @@
           </button>
           <div>
             <h2>设置</h2>
-            <p>开关与外观即时保存；模型和规则确认后再应用</p>
+            <p>开关与外观即时保存；引擎和规则确认后再应用</p>
           </div>
         </div>
 
         <nav class="settings-tabs" id="settingsTabs" aria-label="设置分类">
-          <button type="button" class="settings-tab" data-tab="model">模型</button>
+          <button type="button" class="settings-tab" data-tab="model">引擎</button>
           <button type="button" class="settings-tab" data-tab="style">外观</button>
           <button type="button" class="settings-tab" data-tab="rules">页面规则</button>
           <button type="button" class="settings-tab" data-tab="tools">高级</button>
@@ -138,21 +138,21 @@
 
         <section class="settings-panel" data-panel="model">
           <div class="panel-title">
-            <div><span class="section-label">模型与 API</span><strong id="peekModel"></strong></div>
+            <div><span class="section-label">翻译引擎</span><strong id="peekModel"></strong></div>
           </div>
 
           <label class="field">
-            <span class="label">接口协议</span>
+            <span class="label">引擎 / 接口协议</span>
             <select id="providerId" class="human"></select>
           </label>
 
-          <label class="field">
+          <label class="field" id="apiBaseField">
             <span class="label">API 地址</span>
             <input id="apiBase" class="machine" type="url" spellcheck="false" placeholder="https://api.deepseek.com" />
             <span class="field-note" id="baseNote"></span>
           </label>
 
-          <label class="field">
+          <label class="field" id="apiKeyField">
             <span class="label">API Key <a id="keyLink" class="get-key" target="_blank" rel="noopener" hidden>去哪里拿 →</a></span>
             <span class="with-action">
               <input id="apiKey" class="machine" type="password" spellcheck="false" placeholder="sk-..." autocomplete="off" />
@@ -162,7 +162,7 @@
             <span class="field-note" id="keyNote"></span>
           </label>
 
-          <label class="field">
+          <label class="field" id="modelField">
             <span class="label">模型</span>
             <span class="with-action">
               <input id="model" class="machine" list="modelHints" spellcheck="false" placeholder="deepseek-v4-flash" />
@@ -173,11 +173,12 @@
           </label>
 
           <p class="hint" id="providerHint"></p>
+          <p class="machine-mode-note" id="machineModeNote" hidden></p>
           <p class="hint" id="accountsHint"></p>
           <div class="panel-actions split-actions">
             <button type="button" id="test" class="ghost">测试连接</button>
             <span class="apply-note" id="modelApplyNote"></span>
-            <button type="button" id="applyModel" class="primary-soft" disabled>应用模型设置</button>
+            <button type="button" id="applyModel" class="primary-soft" disabled>应用引擎设置</button>
           </div>
         </section>
 
@@ -325,10 +326,10 @@ consistently across the page. Use:
             <div class="switch-list">
               <label class="setting-row compact-row"><div><strong>只翻正文区</strong><span>跳过导航与侧栏</span></div><span class="switch"><input type="checkbox" id="contentRootOnly" /><span class="switch-track"></span></span></label>
               <label class="setting-row compact-row"><div><strong>过滤噪音</strong><span>跳过语言条目与放不下译文的容器</span></div><span class="switch"><input type="checkbox" id="smartFilter" /><span class="switch-track"></span></span></label>
-              <label class="setting-row compact-row"><div><strong>优先整页翻译</strong><span>不同模型限制不同；正文 ≤12,000 字且 ≤80 段时整页提交，超限自动分块。关闭后始终分块</span></div><span class="switch"><input type="checkbox" id="wholePageTranslation" /><span class="switch-track"></span></span></label>
-              <label class="setting-row compact-row"><div><strong>Beta：跨批先例注入</strong><span>仅在精确局部触发器重复时向后续批次提供旧译法；命中率低，默认关闭</span></div><span class="switch"><input type="checkbox" id="semanticPrecedent" /><span class="switch-track"></span></span></label>
+              <label class="setting-row compact-row"><div><strong>优先整页翻译</strong><span id="wholePageNote">不同模型限制不同；正文 ≤12,000 字且 ≤80 段时整页提交，超限自动分块。关闭后始终分块</span></div><span class="switch"><input type="checkbox" id="wholePageTranslation" /><span class="switch-track"></span></span></label>
+              <label class="setting-row compact-row" data-llm-only><div><strong>Beta：跨批先例注入</strong><span>仅在精确局部触发器重复时向后续批次提供旧译法；命中率低，默认关闭</span></div><span class="switch"><input type="checkbox" id="semanticPrecedent" /><span class="switch-track"></span></span></label>
               <label class="setting-row compact-row"><div><strong>复用缓存译文</strong></div><span class="switch"><input type="checkbox" id="useCache" /><span class="switch-track"></span></span></label>
-              <label class="setting-row compact-row"><div><strong>自动读取整页语境</strong></div><span class="switch"><input type="checkbox" id="autoPreflight" /><span class="switch-track"></span></span></label>
+              <label class="setting-row compact-row" data-llm-only><div><strong>自动读取整页语境</strong></div><span class="switch"><input type="checkbox" id="autoPreflight" /><span class="switch-track"></span></span></label>
               <label class="setting-row compact-row"><div><strong>调试日志</strong><span>在控制台输出运行信息</span></div><span class="switch"><input type="checkbox" id="debug" /><span class="switch-track"></span></span></label>
             </div>
 

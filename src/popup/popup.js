@@ -117,7 +117,9 @@ function showHome() {
 }
 
 function showSettings(tab = activeSettingsTab) {
-  activeSettingsTab = ['model', 'style', 'rules', 'tools'].includes(tab) ? tab : 'model';
+  const machine = activeProvider()?.kind === 'mt';
+  const allowed = machine ? ['model', 'style', 'tools'] : ['model', 'style', 'rules', 'tools'];
+  activeSettingsTab = allowed.includes(tab) ? tab : 'model';
   $('homeView').hidden = true;
   $('settingsView').hidden = false;
   document.querySelectorAll('#settingsTabs .settings-tab').forEach((btn) => {
@@ -138,6 +140,7 @@ function activeProvider() {
 function paintProviderHint() {
   // 用表单当前值而不是已保存的 settings：切换协议时提示要立刻跟着变
   const p = activeProvider();
+  if (p?.fixedBase && $('apiBase').value !== p.defaultBase) $('apiBase').value = p.defaultBase;
   $('providerHint').textContent = p ? p.hint : '';
   $('modelHints').innerHTML = ((p && p.models) || [])
     .map((m) => `<option value="${m}"></option>`)
@@ -149,6 +152,33 @@ function paintProviderHint() {
   $('modelNote').textContent = p?.modelHint ? `例：${p.modelHint}` : '';
   $('modelNote').dataset.tone = '';
   paintKeyNote();
+  paintEngineVisibility(p);
+}
+
+function paintEngineVisibility(provider = activeProvider()) {
+  const machine = provider?.kind === 'mt';
+  $('apiBaseField').hidden = Boolean(provider?.fixedBase);
+  $('apiKeyField').hidden = provider?.requiresKey === false;
+  $('modelField').hidden = provider?.requiresModel === false;
+  $('contextCard').hidden = machine;
+  $('consistencyCard').hidden = machine;
+  document.querySelectorAll('[data-llm-only]').forEach((node) => { node.hidden = machine; });
+  const rulesTab = document.querySelector('.settings-tab[data-tab="rules"]');
+  if (rulesTab) rulesTab.hidden = machine;
+  $('settingsTabs').style.gridTemplateColumns = machine ? 'repeat(3, 1fr)' : '';
+
+  $('machineModeNote').hidden = !machine;
+  $('machineModeNote').textContent = machine
+    ? '基础翻译模式会把安全范围内的正文合并提交；超限分块时附带标题、章节和相邻原文。页面规则、预检与语义记忆不会生效。正文仍会发送给所选服务'
+    : '';
+  $('taskFootText').textContent = machine
+    ? '免 Key 基础翻译 · 安全范围内整页合并'
+    : '自动读取页面语境 · 安全范围内优先整页';
+  $('wholePageNote').textContent = machine
+    ? `正文 ≤${(provider.wholePageMaxSourceChars || 4500).toLocaleString()} 字且 ≤${provider.wholePageMaxItems || 60} 段时整页合并；超限自动分块并附带邻接语境。关闭后始终分块`
+    : '不同模型限制不同；正文 ≤12,000 字且 ≤80 段时整页提交，超限自动分块。关闭后始终分块';
+
+  if (machine && activeSettingsTab === 'rules' && !$('settingsView').hidden) showSettings('model');
 }
 
 /** Key 格式只提示不拦截：各家随时可能换前缀，硬拦会把能用的 Key 挡在外面 */
@@ -184,6 +214,7 @@ function fixBase() {
 
 async function onFetchModels() {
   const p = activeProvider();
+  if (p?.requiresModel === false) return setStatus('这个基础翻译引擎没有模型列表', '');
   if (!permissionGranted) {
     const origin = originPatternFromUrl($('apiBase').value.trim());
     if (!origin) return setStatus('先填好 API 地址', 'warn');
@@ -277,19 +308,22 @@ async function onCopyApiKey() {
 /** 让"哪几家已经配好了"一眼可见，切换时心里有数 */
 function paintAccounts() {
   const ids = Object.entries(settings.accounts || {})
-    .filter(([, a]) => a?.apiKey)
+    .filter(([id, account]) => {
+      const provider = listProviders().find((p) => p.id === id);
+      return provider?.requiresKey === false ? Boolean(account?.apiBase) : Boolean(account?.apiKey);
+    })
     .map(([id]) => listProviders().find((p) => p.id === id)?.label || id);
   $('accountsHint').textContent = ids.length
-    ? `已保存 Key 的服务商：${ids.join('、')}（切换不会丢）`
+    ? `已保存 Key / 引擎配置：${ids.join('、')}（切换不会丢）`
     : '';
 }
 
 
 function paintPeeks() {
-  const providerLabel = listProviders().find((x) => x.id === $('providerId').value)?.label || '';
-  $('peekModel').textContent = `${providerLabel} · ${$('model').value || '未填模型'}${
-    formConfigured() ? '' : ' · 待配置'
-  }`;
+  const provider = activeProvider();
+  const providerLabel = provider?.label || '';
+  const detail = provider?.kind === 'mt' ? '免 Key 基础翻译' : ($('model').value || '未填模型');
+  $('peekModel').textContent = `${providerLabel} · ${detail}${formConfigured() ? '' : ' · 待配置'}`;
 
   const live = tabInfo?.state;
   const profile = live?.profileYaml ? fromYaml(live.profileYaml) : null;
@@ -342,6 +376,10 @@ function paintDetected() {
 
 /** 打开页面规则。它是可选的人工覆盖，不再承担“修正系统判断”的警告含义。 */
 function jumpToRules() {
+  if (activeProvider()?.kind === 'mt') {
+    setStatus('免 Key 基础翻译不支持页面规则；切换到 LLM 引擎后可用', '');
+    return;
+  }
   showSettings('rules');
   try {
     $('background').focus();
@@ -373,10 +411,11 @@ function markClean(group) {
   updateApplyUi(group);
 }
 
-function currentModelDraft() {
+function currentModelDraft(providerId = $('providerId').value) {
+  const provider = listProviders().find((item) => item.id === providerId) || activeProvider();
   return {
-    providerId: $('providerId').value,
-    apiBase: $('apiBase').value.trim(),
+    providerId,
+    apiBase: provider?.fixedBase ? provider.defaultBase : $('apiBase').value.trim(),
     apiKey: $('apiKey').value.trim(),
     model: $('model').value.trim()
   };
@@ -384,7 +423,7 @@ function currentModelDraft() {
 
 function rememberCurrentModelDraft() {
   if (!modelDraftProviderId) return;
-  const draft = currentModelDraft();
+  const draft = currentModelDraft(modelDraftProviderId);
   modelDraftAccounts[modelDraftProviderId] = {
     apiBase: draft.apiBase,
     apiKey: draft.apiKey,
@@ -574,8 +613,11 @@ async function refreshTab() {
 
 /** 主按钮按当前表单判断；点翻译时会自动提交尚未应用的模型/规则草稿。 */
 function formConfigured() {
-  const needKey = activeProvider()?.requiresKey !== false;
-  const fields = needKey ? ['apiBase', 'apiKey', 'model', 'targetLang'] : ['apiBase', 'model', 'targetLang'];
+  const provider = activeProvider();
+  const fields = ['targetLang'];
+  if (provider?.requiresBase !== false) fields.push('apiBase');
+  if (provider?.requiresKey !== false) fields.push('apiKey');
+  if (provider?.requiresModel !== false) fields.push('model');
   return fields.every((id) => $(id).value.trim());
 }
 
@@ -584,7 +626,7 @@ function refreshReadiness() {
   const injectable = tabInfo ? tabInfo.injectable : true;
   $('go').disabled = !ready || !injectable;
 
-  if (!ready) return setStatus('先配置模型与 API，然后就能翻译当前页', '');
+  if (!ready) return setStatus('先配置翻译引擎，然后就能翻译当前页', '');
   if (!injectable) return setStatus('当前页面不允许注入脚本，换一个普通网页', 'warn');
   if (!permissionGranted) {
     const origin = originPatternFromUrl($('apiBase').value.trim());
@@ -603,7 +645,7 @@ function onGo() {
   const origin = originPatternFromUrl($('apiBase').value.trim());
   if (!origin) return setStatus('API 地址不是合法的 http(s) URL', 'warn');
   chrome.permissions.request({ origins: [origin] }).then((granted) => {
-    if (!granted) return setStatus('没有该域名的访问权限，无法调用模型', 'warn');
+    if (!granted) return setStatus('没有该域名的访问权限，无法调用翻译引擎', 'warn');
     permissionGranted = true;
     startTranslation();
   });
@@ -649,7 +691,7 @@ async function runTest() {
     type: MSG.TEST_CONNECTION,
     payload: { settingsOverride: currentModelDraft() }
   });
-  if (res?.ok) setStatus(`连接正常，模型回了：${res.echoed}`, 'ok');
+  if (res?.ok) setStatus(`连接正常，引擎返回：${res.echoed}`, 'ok');
   else setStatus(res?.error?.message || '连接失败', 'warn');
 }
 
@@ -793,6 +835,9 @@ async function onLabRun() {
 }
 
 async function onConvertRules() {
+  if (activeProvider()?.kind === 'mt') {
+    return setStatus('免 Key 基础翻译不支持规则转换；切换到 LLM 引擎后可用', '');
+  }
   const text = $('background').value.trim();
   if (!text) return setStatus('先写一条需要补充的页面语境或术语要求', 'warn');
   if (!permissionGranted) {
@@ -844,6 +889,9 @@ function paintRulesNote() {
 }
 
 async function onPreflight() {
+  if (activeProvider()?.kind === 'mt') {
+    return setStatus('免 Key 基础翻译不支持页面预检；整页与邻接语境会直接随正文提交', '');
+  }
   if (!tabInfo?.tabId) return setStatus('先打开一个普通网页', 'warn');
   if (!permissionGranted) {
     const origin = originPatternFromUrl($('apiBase').value.trim());
@@ -986,7 +1034,7 @@ async function init() {
     modelDraftProviderId = nextId;
     const p = listProviders().find((x) => x.id === nextId);
     const next = modelDraftAccounts[nextId] || null;
-    $('apiBase').value = next?.apiBase || p?.defaultBase || '';
+    $('apiBase').value = p?.fixedBase ? p.defaultBase : (next?.apiBase || p?.defaultBase || '');
     $('apiKey').value = next?.apiKey || '';
     $('copyApiKey').textContent = '复制';
     $('model').value = next?.model || p?.defaultModel || '';
@@ -999,7 +1047,7 @@ async function init() {
 
   $('applyModel').addEventListener('click', async () => {
     await applyModelSettings();
-    setStatus('模型设置已应用', 'ok');
+    setStatus('引擎设置已应用', 'ok');
   });
 
   // -------------------------- transactional: rules --------------------------

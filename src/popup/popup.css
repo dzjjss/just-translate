@@ -1,5 +1,5 @@
 /*
- * Just Translate popup visual system — v15.0
+ * Just Translate popup visual system — v16.0
  *
  * 信息架构：
  *   首页 = 当前任务 + 页面语境 + 语义一致性观测
@@ -434,6 +434,16 @@ input[type='color'] { height: 32px; padding: 3px; cursor: pointer; }
   line-height: 1.45;
 }
 .hint { margin: 7px 0 0; }
+.machine-mode-note {
+  margin: 9px 0 0;
+  padding: 8px 9px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 7px 7px 0;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
 .field-note { display: block; margin-top: 4px; }
 .field-note:empty { display: none; }
 .field-note[data-tone='warn'] { color: var(--warn); }
