@@ -1,0 +1,162 @@
+/* 注入到用户页面的样式。原则：只影响我们自己的节点，且尽量继承宿主排版。 */
+
+:root {
+  /* 译文统一字族 —— 这是"差异化"。不再继承 font-family，
+     否则效果全靠西文字体缺中文字形时的回退，换个站点就消失。 */
+  --byom-font: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC",
+    "Source Han Sans SC", system-ui, sans-serif;
+  --byom-accent: rgba(242, 120, 60, 0.58);
+  --byom-text-shadow: 0 0 0.4px rgba(255, 255, 255, 0.28);
+}
+
+.byom-t {
+  display: block !important;
+  color: var(--byom-text, inherit) !important;
+  margin: 0.35em 0 0.15em !important;
+  padding: 0 !important;
+  font-family: var(--byom-font) !important;
+  font-size: inherit;
+  font-weight: inherit;
+  font-style: normal !important;
+  line-height: 1.6 !important;
+  background: none !important;
+  text-align: inherit !important;
+  white-space: normal !important;
+  text-indent: 0 !important;
+  letter-spacing: normal !important;
+  /* 原文标题常被 CSS 强制大写或加字间距，译文不该跟着走 */
+  text-transform: none !important;
+  font-variant: normal !important;
+  text-shadow: none !important;
+  float: none !important;
+  position: static !important;
+  max-width: 100% !important;
+  overflow-wrap: break-word !important;
+}
+
+/*
+  字体增强只画一层亚像素阴影，并且只画已经完成的译文。
+  不使用 text-stroke：中文细笔画会被它直接加粗；也不堆多层 shadow，避免长文滚动时
+  增加无谓的重绘。变量挂在 <html> 上，主题变化不需要遍历所有译文节点。
+*/
+.byom-t[data-byom-state='done'] {
+  text-shadow: var(--byom-text-shadow, none) !important;
+}
+
+/* 用户明确要求高对比或系统强制配色时，交回浏览器处理，避免微阴影降低边缘锐度。 */
+@media (prefers-contrast: more), (forced-colors: active) {
+  .byom-t[data-byom-state='done'] {
+    text-shadow: none !important;
+  }
+}
+
+/* ---- 层级：译文之间仍要分得清标题和正文 ---- */
+
+.byom-t[data-byom-role='heading'] {
+  /* --byom-src-size 由 attach 时读取源标题字号写入；clamp 保证既不失层级也不喧宾夺主 */
+  font-size: clamp(15px, calc(var(--byom-src-size, 1.15em) * 0.68), 34px);
+  font-weight: 600;
+  line-height: 1.35 !important;
+  margin-top: 0.25em !important;
+}
+
+.byom-t[data-byom-role='ui'] {
+  font-size: 0.9em;
+  opacity: 0.92;
+}
+
+/* ---- 标记样式：切换只改 <html> 上的属性 ---- */
+
+html[data-byom-style='bar'] .byom-t,
+html:not([data-byom-style]) .byom-t {
+  border-left: 2px solid var(--byom-accent) !important;
+  padding-left: 0.6em !important;
+}
+
+html[data-byom-style='underline'] .byom-t {
+  border-bottom: 1px dashed var(--byom-accent) !important;
+  padding-bottom: 0.15em !important;
+}
+
+html[data-byom-style='tint'] .byom-t {
+  background: color-mix(in srgb, currentColor 7%, transparent) !important;
+  padding: 0.15em 0.4em !important;
+  border-radius: 4px !important;
+}
+
+html[data-byom-style='plain'] .byom-t {
+  opacity: 0.88;
+}
+
+/*
+  加载态用一个转圈，不用"翻译中"三个字：
+  文字会被当成译文本身读，还会占据和真实译文差不多的宽度，
+  译文回填时整段跳一下。转圈只占一个字高，视觉上明确是"还没好"。
+*/
+.byom-t[data-byom-state='loading'] {
+  min-height: 1.2em;
+  opacity: 0.75;
+}
+
+.byom-t[data-byom-state='loading']::after {
+  content: '';
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  vertical-align: -0.1em;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.45;
+  animation: byom-spin 0.72s linear infinite;
+}
+
+@keyframes byom-spin {
+  to { transform: rotate(360deg); }
+}
+
+.byom-t[data-byom-state='error'] {
+  color: #b3261e !important;
+  font-size: 0.85em !important;
+  cursor: pointer;
+}
+
+/* 已登记待翻译：节点先占位以便去重，但不该让用户看到空行 */
+.byom-t[data-byom-state='deferred'] {
+  display: none !important;
+}
+
+/* 三态显示：仅原文藏译文；仅译文藏可安全隐藏的原文（元素级单元） */
+html[data-byom-display='original'] .byom-t {
+  display: none !important;
+}
+
+html[data-byom-display='translation'] [data-byom-src] {
+  display: none !important;
+}
+
+/*
+  译文在元素内部的情况（列表项、单元格、引用块）：藏掉容器会把译文一起藏掉。
+  把容器字号压成 0 能一并收拾掉裸文本节点和行内子元素 —— 它们选不中，
+  但都继承字号。译文自己用 attach 时记下的原始字号还原。
+*/
+html[data-byom-display='translation'] [data-byom-src-in] {
+  font-size: 0 !important;
+}
+
+html[data-byom-display='translation'] [data-byom-src-in] > .byom-t {
+  font-size: var(--byom-own-size, 15px) !important;
+  margin-top: 0 !important;
+}
+
+/* 与术语表不一致的译文：点状下划线提示，不打断阅读 */
+.byom-t[data-byom-drift] {
+  text-decoration: underline dotted rgba(224, 112, 58, 0.7) !important;
+  text-underline-offset: 3px;
+}
+
+/*
+  状态条与悬浮球的样式已经搬进 Shadow DOM（见 src/content/ui-css.js）。
+  这里只保留译文节点的样式 —— 译文必须留在正常 DOM 里才能被 Ctrl+F 搜到、
+  被复制、被朗读工具读到，所以它反过来需要继承页面排版，不能隔离。
+*/
