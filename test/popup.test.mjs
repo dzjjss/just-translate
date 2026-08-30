@@ -34,7 +34,7 @@ const chrome = {
     onChanged: { addListener() {} }
   },
   runtime: {
-    getManifest: () => ({ version: '15.0' }),
+    getManifest: () => ({ version: '16.0' }),
     async sendMessage(msg) {
       sent.push(msg);
       if (msg.type === 'preflight-on-tab') {
@@ -173,6 +173,39 @@ test('切换供应商会带出默认地址与默认模型', async () => {
   assert.equal($('model').value, 'gpt-4o-mini');
   assert.ok($('providerHint').textContent.length > 0, '协议提示没跟着切换');
   assert.equal($('applyModel').disabled, false);
+});
+
+test('免 Key 引擎隐藏 Key/模型与 LLM 功能，Google 固定地址、DeepLX 保留自托管地址', async () => {
+  $('providerId').value = 'google-translate';
+  fire('providerId', 'change');
+  await tick();
+  await tick();
+  assert.equal($('apiBase').value, 'https://translate.googleapis.com');
+  assert.equal($('apiBaseField').hidden, true);
+  assert.equal($('apiKeyField').hidden, true);
+  assert.equal($('modelField').hidden, true);
+  assert.equal($('contextCard').hidden, true);
+  assert.equal($('consistencyCard').hidden, true);
+  assert.equal(document.querySelector('.settings-tab[data-tab="rules"]').hidden, true);
+  assert.equal($('machineModeNote').hidden, false);
+  assert.equal($('go').disabled, false, '免 Key 引擎仍被 Key/模型字段锁死');
+
+  $('providerId').value = 'deeplx';
+  fire('providerId', 'change');
+  await tick();
+  await tick();
+  assert.equal($('apiBaseField').hidden, false);
+  assert.equal($('apiBase').value, 'http://localhost:1188/translate');
+  assert.equal($('apiKeyField').hidden, true);
+  assert.equal($('modelField').hidden, true);
+
+  // 恢复带 Key 的引擎，避免把模式状态泄漏给后续规则用例。
+  $('providerId').value = 'openai';
+  fire('providerId', 'change');
+  await tick();
+  await tick();
+  assert.equal($('contextCard').hidden, false);
+  assert.equal(document.querySelector('.settings-tab[data-tab="rules"]').hidden, false);
 });
 
 test('背景模板点一下就填进输入框并标脏', () => {
@@ -520,7 +553,7 @@ test('工具里的临时翻译仍带上本页语境', async () => {
 test('面板显著位置显示版本号，方便横向对比不同版本的译文', () => {
   const el = $('ver');
   assert.ok(el, '缺少版本号元素');
-  assert.equal(el.textContent, 'v15.0', '版本号应取自 manifest');
+  assert.equal(el.textContent, 'v16.0', '版本号应取自 manifest');
   assert.ok(el.closest('header'), '版本号应在页头，而不是藏在折叠区里');
 });
 
