@@ -31,6 +31,44 @@ export const PROVIDER_PRESETS = Object.freeze([
     models: ['deepseek-v4-flash', 'deepseek-v4-pro']
   },
   {
+    id: 'google-translate',
+    kind: 'mt',
+    requiresKey: false,
+    requiresModel: false,
+    fixedBase: true,
+    keyHint: '不需要 Key；正文会直接发送到 Google Translate',
+    keyPattern: '',
+    keyUrl: '',
+    modelHint: '',
+    label: '免 Key · Google Translate（实验）',
+    wire: 'google-translate',
+    defaultBase: 'https://translate.googleapis.com',
+    defaultModel: '',
+    hint: '现代神经机器翻译。支持整页合并与分块邻接语境；不支持模型指令、术语预检和语义记忆。免 Key 不等于本地或匿名',
+    wholePageMaxSourceChars: 4500,
+    wholePageMaxItems: 60,
+    models: []
+  },
+  {
+    id: 'deeplx',
+    kind: 'mt',
+    requiresKey: false,
+    requiresModel: false,
+    endpointIsComplete: true,
+    keyHint: '不需要 Key；需要你自己的 DeepLX 服务',
+    keyPattern: '',
+    keyUrl: '',
+    modelHint: '',
+    label: '免 Key · DeepLX 自托管（实验）',
+    wire: 'deeplx',
+    defaultBase: 'http://localhost:1188/translate',
+    defaultModel: '',
+    hint: '填写完整的 DeepLX POST 地址。支持整页合并与分块邻接语境；中转服务能看到正文，建议使用可信或自托管实例',
+    wholePageMaxSourceChars: 4500,
+    wholePageMaxItems: 60,
+    models: []
+  },
+  {
     id: 'anthropic',
     auth: 'x-api-key',
     keyHint: 'sk-ant-…',
@@ -137,7 +175,14 @@ export function listProviders() {
     defaultModel: provider.defaultModel,
     hint: provider.hint,
     auth: provider.auth || 'bearer',
+    kind: provider.kind || 'llm',
     requiresKey: provider.requiresKey !== false,
+    requiresModel: provider.requiresModel !== false,
+    requiresBase: provider.requiresBase !== false,
+    fixedBase: Boolean(provider.fixedBase),
+    endpointIsComplete: Boolean(provider.endpointIsComplete),
+    wholePageMaxSourceChars: provider.wholePageMaxSourceChars || null,
+    wholePageMaxItems: provider.wholePageMaxItems || null,
     keyHint: provider.keyHint || '',
     extraHeaders: provider.extraHeaders || null,
     keyPattern: provider.keyPattern || '',
@@ -145,4 +190,8 @@ export function listProviders() {
     modelHint: provider.modelHint || '',
     models: [...(provider.models || [])]
   }));
+}
+
+export function providerDescriptor(id) {
+  return listProviders().find((provider) => provider.id === id) || listProviders()[0];
 }

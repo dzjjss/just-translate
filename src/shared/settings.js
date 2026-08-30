@@ -1,5 +1,6 @@
-import { DEFAULT_SETTINGS, PROMPT_VERSION } from './constants.js';
+import { DEFAULT_SETTINGS, LIMITS, PROMPT_VERSION } from './constants.js';
 import { hashString } from './hash.js';
+import { providerDescriptor } from './provider-catalog.js';
 
 const KEY = 'settings';
 
@@ -167,8 +168,16 @@ export function onSettingsChanged(cb) {
  * 逼用户填个假的 1234 才能用是纯粹的自找麻烦。
  */
 export function isConfigured(s, provider) {
-  const needKey = provider ? provider.requiresKey !== false : true;
-  return Boolean(s.apiBase && s.model && s.targetLang && (!needKey || s.apiKey));
+  const meta = provider || providerDescriptor(s.providerId);
+  const needBase = meta.requiresBase !== false;
+  const needKey = meta.requiresKey !== false;
+  const needModel = meta.requiresModel !== false;
+  return Boolean(
+    (!needBase || s.apiBase) &&
+    (!needKey || s.apiKey) &&
+    (!needModel || s.model) &&
+    s.targetLang
+  );
 }
 
 /**
@@ -219,7 +228,7 @@ const PRIVATE_SEMANTIC_KEYS = Object.freeze([
 const EXTRACTION = new Set(['minTextLength', 'smartFilter', 'skipSelectors', 'contentRootOnly', 'siteRules']);
 
 /** 只改变分批方式；下一批自然生效。 */
-const SCHEDULING = new Set(['maxCharsPerChunk']);
+const SCHEDULING = new Set(['maxCharsPerChunk', 'wholePageMaxSourceChars', 'wholePageMaxItems']);
 
 /** 纯观测开关：允许重建会话清空统计，但不应导致 prompt 版本变化。 */
 const OBSERVATION = new Set(['semanticConsistency']);
@@ -238,9 +247,14 @@ function stable(value) {
 }
 
 export function semanticRevision(settings = {}) {
+  const provider = providerDescriptor(settings.providerId);
+  const machine = provider.kind === 'mt';
   const payload = {
     promptVersion: PROMPT_VERSION,
-    exposed: {
+    exposed: machine ? {
+      targetLang: settings.targetLang,
+      wholePageTranslation: settings.wholePageTranslation
+    } : {
       targetLang: settings.targetLang,
       presetId: settings.presetId,
       background: settings.background,
@@ -258,13 +272,27 @@ export function semanticRevision(settings = {}) {
         rulesText: rule?.rulesText || ''
       }))
     },
-    private: Object.fromEntries(PRIVATE_SEMANTIC_KEYS.map((key) => [key, settings[key]]))
+    private: Object.fromEntries(
+      PRIVATE_SEMANTIC_KEYS
+        .filter((key) => !machine || (key !== 'model' && key !== 'customPrompt'))
+        .map((key) => [key, settings[key]])
+    )
   };
   return hashString(JSON.stringify(stable(payload)));
 }
 
 export function toRuntimeConfig(settings = {}) {
   const config = Object.fromEntries(EXPOSED_KEYS.map((key) => [key, settings[key]]));
+  const provider = providerDescriptor(settings.providerId);
+  config.engineKind = provider.kind;
+  config.wholePageMaxSourceChars = provider.wholePageMaxSourceChars || LIMITS.WHOLE_PAGE_MAX_SOURCE_CHARS;
+  config.wholePageMaxItems = provider.wholePageMaxItems || LIMITS.WHOLE_PAGE_MAX_ITEMS;
+  if (provider.kind === 'mt') {
+    // 存储中的 LLM 偏好不被覆盖；运行时只关闭当前引擎无法兑现的能力。
+    config.autoPreflight = false;
+    config.semanticConsistency = false;
+    config.semanticPrecedent = false;
+  }
   config.semanticRevision = semanticRevision(settings);
   return config;
 }

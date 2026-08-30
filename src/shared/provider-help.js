@@ -30,6 +30,20 @@ export function normalizeBase(raw, provider) {
 
   url = url.replace(/\/+$/, '');
 
+  if (provider?.endpointIsComplete) {
+    try {
+      const current = new URL(url);
+      const fallback = new URL(provider.defaultBase);
+      if (current.pathname === '/' && fallback.pathname !== '/') {
+        url += fallback.pathname;
+        notes.push(`已补上 ${fallback.pathname}`);
+      }
+    } catch {
+      /* 地址还没填完整，先不动 */
+    }
+    return { value: url, note: notes.join('；') };
+  }
+
   for (const tail of TAIL_PATHS) {
     if (url.toLowerCase().endsWith(tail)) {
       url = url.slice(0, -tail.length).replace(/\/+$/, '');
