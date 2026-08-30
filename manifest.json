@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Just Translate",
-  "version": "15.0",
-  "description": "只做翻译：自带模型的沉浸式双语网页翻译。多服务商 Key 并存，页面语境可控，术语一致。",
+  "version": "16.0",
+  "description": "只做翻译：自带模型或免 Key 的沉浸式双语网页翻译。整页优先，超限自动分块。",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",

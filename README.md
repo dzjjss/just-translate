@@ -1,18 +1,19 @@
 # Just Translate
 
 只做翻译。不做单词本、不做 TTS、不做语言学习 —— 名字就是范围声明。
-自带模型的沉浸式双语网页翻译，译文插在原文下面，原文一个字都不改。
+支持自带模型与免 Key 基础引擎的沉浸式双语网页翻译，译文插在原文下面，原文一个字都不改。
 
 > 内部的 DOM 类名、data 属性和 CSS 变量仍然是 `byom-` 前缀（bring your own model）。
 > 改名不动它，是为了不破坏已有用户的存储数据，也不想为一次更名去动提取器和渲染层的契约。
 
-- **BYO API**：九家预设 + 任意 OpenAI 兼容端点，每家一份 Key 并存，切换不丢。Key 在本地，不经过任何第三方服务
+- **两类翻译引擎**：BYO LLM 预设 + 任意 OpenAI 兼容端点；也可选免 Key 的 Google Translate 或自托管 DeepLX
+- **凭证分离**：每家一份 Key / endpoint 配置，切换不丢；Key 只保存在本机扩展存储中，不下发网页内容脚本
 - **页面语境**：技术文档、论文、新闻、论坛各用各的翻译指令；翻译前整页只读一次，得到静态术语与歧义约束
 - **语境可控**：普通页面无需人工干预；有特殊要求时再到「页面规则」补背景、固定术语或站点规则
 - **任务优先 UI**：打开面板先看到目标语言、显示方式和「翻译当前页面」；模型、外观、规则与工具按使用频率逐级后退
 - **语义一致性观测**：默认开启；只记录 occurrence、alignment 与 FIXED / STABLE / UNKNOWN，不修改译文
 - **术语分权**：用户明确锁定的术语才是硬约束；自动预检只产生未验证的软建议，局部语义与语法角色可以覆盖
-- **整页优先**：默认在 12,000 源字符、80 个正文单元以内一次提交全文，让模型直接利用跨段上下文；任一项超限自动分块，也可手动关闭
+- **整页优先**：LLM 默认在 12,000 源字符 / 80 单元内一次提交；免 Key 引擎在 4,500 字符 / 60 单元内合并提交，超限自动分块，也可手动关闭
 - **视口优先分块**：进入分块路径后，视口附近的段落先出队，滚动时优先级随之更新；无限滚动、SPA 重绘自动跟进
 - **跨批先例 Beta**：仅在精确局部触发器重复时向后续批次提供旧译法；与观测分开，默认关闭
 - **页面入口常驻**：普通 HTTP/HTTPS 页面静态注入轻量 content loader，让悬浮球能稳定出现；API 域名权限仍只在实际调用时按需申请
@@ -23,7 +24,14 @@
 chrome://extensions/  →  开发者模式  →  加载已解压的扩展程序  →  选择本文件夹
 ```
 
-填好 API 地址、Key、模型，点「翻译当前页面」。第一次会弹一次权限请求，只针对你填的 API 域名。
+选择翻译引擎，点「翻译当前页面」。BYO LLM 需要 API 地址、Key 与模型；Google Translate 免配置，DeepLX 只需填写自己的完整 POST 地址。第一次会弹一次权限请求，只针对实际调用的域名。
+
+### 免 Key 模式的边界
+
+- **Google Translate（实验）**走非官方网页接口，不需要 Key，但协议可能由 Google 调整；正文会发送给 Google。
+- **DeepLX（实验）**不内置公共中转，默认指向本机 `http://localhost:1188/translate`；也可填写可信的自托管地址。中转服务可以看到正文。
+- 现代机器翻译已经不是旧式词典规则，但这里仍按基础 MT 能力对待：保留整页/邻接上下文，不声称支持 prompt 指令、预检 taxonomy 或语义记忆。
+- 免 Key 不等于本地、匿名或无数据成本。需要完整的 LLM 语境控制时，切回 BYO LLM 引擎。
 
 | 快捷键 | 作用 |
 | --- | --- |
@@ -43,11 +51,12 @@ src/
 ├── background/               特权侧：Key、网络、缓存都在这里
 │   ├── service-worker.js     入口：storage 上锁、路由、命令、配置广播
 │   ├── router.js             消息 → 处理函数
-│   ├── translator.js         编排：cache policy → 调模型 → 对齐结果
+│   ├── translator.js         编排：cache policy → LLM / 机器翻译 → 对齐结果
+│   ├── machine-translation.js  合并边界、ID 回填与损坏后二分恢复
 │   ├── queue.js              全局并发闸门 + 可打断的退避重试
 │   ├── cache.js              缓存存储（内存 + 批量落盘），不决定命中策略
 │   ├── injector.js           activeTab + scripting 当前页兜底注入
-│   └── providers/            index（wire 选择）· openai/anthropic（线协议）· http
+│   └── providers/            OpenAI / Anthropic / Google Translate / DeepLX 线协议
 ├── content/                  页面侧：只懂 DOM，不懂模型
 │   ├── loader.js             经典脚本 → 动态 import 拉起 ES module
 │   ├── main.js               composition root：DOM、UI 与下面几个 owner 接线
@@ -128,6 +137,7 @@ npm run check      # lint + 四个测试套件
 - `test/architecture.test.mjs` — 依赖方向、循环依赖、调度状态所有权。防止以后重构又把职责塞回 `main.js`
 - `test/core.test.mjs` — PageSession / Scheduler / RuntimeContract / PageContext 的纯逻辑竞态测试，不依赖 DOM
 - `test/cache.test.mjs` — 纯译文缓存：端点/模型/prompt 指纹隔离与命中策略
+- `test/machine-translation.test.mjs` — 免 Key 语言码、合并边界、邻接语境、损坏恢复与两条 wire 合同
 - `test/extractor.test.mjs` — DOM 提取、渲染、分批、摘要、漂移检测、规则解析、悬浮球
 - `test/content.test.mjs` — 内容脚本整体在 jsdom 里跑起来：预检闸门时序、画像生命周期、
   SPA 换页、清除后重来。时序类 bug 只有这样才抓得到
@@ -457,8 +467,9 @@ viewBox 的描边 SVG，不再受字体或缩放影响。API Key 旁新增显式
 
 **全新安装默认使用 DeepSeek 官方省钱档**（`https://api.deepseek.com` + `deepseek-v4-flash`）。这只是 fresh default：升级不会静默切换已有用户当前的 provider、endpoint 或 model。
 
-预设九家：OpenAI 通用、DeepSeek 官方省钱档、Anthropic、Google Gemini（OpenAI 兼容层）、
-Azure OpenAI、SiliconFlow、OpenRouter 免费档、本地 Ollama / LM Studio、以及任意自定义端点。
+预设十一家：OpenAI 通用、DeepSeek 官方省钱档、免 Key Google Translate、DeepLX、Anthropic、
+Google Gemini（OpenAI 兼容层）、Azure OpenAI、SiliconFlow、OpenRouter 免费档、本地 Ollama / LM Studio、
+以及任意自定义端点。
 
 **每家一份账户，切换不丢 Key。**顶层的地址/Key/模型三件套是"当前生效"的那份，
 同时按服务商 id 落一份到 `accounts` 里；切换服务商时先存回原来那家，再读出目标那家。
@@ -514,10 +525,10 @@ CoT 会计进输出 token，而输出是最贵的一档；翻译用不到推理�
 }
 ```
 
-只有线协议真的不同（比如 Anthropic 的 `/v1/messages`）才需要新增一个 wire，实现
+只有线协议真的不同（比如 Anthropic 的 `/v1/messages`）才需要新增一个 wire。LLM wire 实现
 `complete({ base, apiKey, model, system, user, temperature, extraBody, signal }) → { text, usage }`
-并在 `WIRES` 里注册。刻意不做第三层"统一适配层"——那会把这个项目变成 LiteLLM 的缩小版，
-而事实是绝大多数供应商本来就说同一种协议。
+；基础机器翻译 wire 实现 `translate({ base, text, sourceLang, targetLang, signal }) → { text }`，
+再在 `WIRES` 里注册。刻意不把两类能力伪装成同一种协议：机器翻译没有 prompt、模型列表或 usage 合同。
 
 **加页面语境**：在 `src/prompt/presets.js` 加一条 guidance，`classify.js` 里加域名或结构特征。
 prompt 的输出合同由 `build.js` 统一维护，preset 只负责领域差异。

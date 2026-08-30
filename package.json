@@ -1,12 +1,12 @@
 {
   "name": "just-translate",
-  "version": "15.0.0",
+  "version": "16.0.0",
   "private": true,
-  "description": "只做翻译的沉浸式双语网页翻译 Chrome 扩展（MV3，无打包器）",
+  "description": "支持自带模型与免 Key 基础引擎的沉浸式双语网页翻译 Chrome 扩展（MV3，无打包器）",
   "type": "module",
   "scripts": {
     "lint": "eslint src test eslint.config.mjs",
-    "test:core": "node test/architecture.test.mjs && node test/core.test.mjs && node test/settings.test.mjs && node test/cache.test.mjs && node test/term-consistency.test.mjs && node test/semantic-memory.test.mjs",
+    "test:core": "node test/architecture.test.mjs && node test/core.test.mjs && node test/settings.test.mjs && node test/cache.test.mjs && node test/machine-translation.test.mjs && node test/term-consistency.test.mjs && node test/semantic-memory.test.mjs",
     "test:dom": "node test/extractor.test.mjs && node test/content.test.mjs && node test/popup.test.mjs",
     "test": "npm run test:core && npm run test:dom",
     "check": "npm run lint && npm test"
