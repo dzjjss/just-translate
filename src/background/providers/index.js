@@ -1,5 +1,7 @@
 import { openaiWire } from './openai.js';
 import { anthropicWire } from './anthropic.js';
+import { googleTranslateWire } from './google-translate.js';
+import { deepLXWire } from './deeplx.js';
 import { PROVIDER_PRESETS, listProviders } from '../../shared/provider-catalog.js';
 
 /**
@@ -7,7 +9,9 @@ import { PROVIDER_PRESETS, listProviders } from '../../shared/provider-catalog.j
  */
 const WIRES = {
   openai: openaiWire,
-  anthropic: anthropicWire
+  anthropic: anthropicWire,
+  'google-translate': googleTranslateWire,
+  deeplx: deepLXWire
 };
 
 const BY_ID = new Map(PROVIDER_PRESETS.map((provider) => [provider.id, provider]));

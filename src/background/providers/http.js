@@ -32,9 +32,9 @@ export async function readError(res, url) {
   const retryable = res.status === 408 || res.status === 429 || res.status >= 500;
   const hint =
     res.status === 401 || res.status === 403
-      ? 'API Key 无效或没有该模型权限'
+      ? '认证信息无效或服务端拒绝访问'
       : res.status === 404
-        ? `接口不存在：${safeUrl(url)}，检查 API Base 是否要带 /v1`
+        ? `接口不存在：${safeUrl(url)}，检查地址和接口路径`
         : res.status === 429
           ? '触发速率限制，降低并发或稍后重试'
           : `HTTP ${res.status}`;
