@@ -10,6 +10,16 @@ import { findSourceTerm, normalizeRenderedForComparison } from './term-consisten
 
 const WORD_RE = /[A-Za-z][A-Za-z0-9'’_-]*/g;
 
+function acceptsPrecedent(candidate) {
+  return candidate && !['locked', 'fixed', 'structural'].includes(candidate.kind);
+}
+
+function validRendering(alignments, term, translation) {
+  const raw = String(alignments[term] || '').trim();
+  const normalized = normalizeRenderedForComparison(raw);
+  return raw && normalized && translation.includes(raw) ? { raw, normalized } : null;
+}
+
 function lemmaOf(candidate) {
   return String(candidate?.lemma || candidate?.term || '').trim().toLowerCase();
 }
@@ -46,14 +56,26 @@ function preferredRaw(targetRow) {
     .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))[0]?.[0] || targetRow.normalized;
 }
 
-export function createSemanticMemory({ maxEntries = 96 } = {}) {
+const disabledStats = Object.freeze({
+  contextualEntries: 0, usableContextualEntries: 0, conflictedContextualEntries: 0,
+  observations: 0, hintLookups: 0, hintHits: 0, hintMisses: 0,
+  hintSuppressedConflicts: 0, precedentOutcomes: 0, precedentMatched: 0,
+  precedentDiverged: 0, precedentUnaligned: 0, precedentMatchRate: 0
+});
+// Disabled experiments own no mutable maps, counters or observations.
+const disabledMemory = Object.freeze({
+  reset() {}, observe() {}, recordHintOutcomes() {},
+  hintsFor: () => [], stats: () => ({ ...disabledStats }),
+  snapshot: () => ({ ...disabledStats, rows: [] })
+});
+
+export function createSemanticMemory({ maxEntries = 96, enabled = true } = {}) {
+  if (!enabled) return disabledMemory;
   const contextual = new Map();
   let observations = 0;
-  let hintLookups = 0;
   let hintHits = 0;
   let hintMisses = 0;
   let hintSuppressedConflicts = 0;
-  let precedentOutcomes = 0;
   let precedentMatched = 0;
   let precedentDiverged = 0;
   let precedentUnaligned = 0;
@@ -78,12 +100,12 @@ export function createSemanticMemory({ maxEntries = 96 } = {}) {
       usableContextualEntries: rows.filter((x) => x.targets.size === 1).length,
       conflictedContextualEntries: rows.filter((x) => x.targets.size !== 1).length,
       observations,
-      hintLookups,
+      hintLookups: hintHits + hintMisses + hintSuppressedConflicts,
       hintHits,
       hintMisses,
       hintSuppressedConflicts,
       // 这里只观察“提供先例后，实际 alignment 是否相同”，不声称先例造成了该结果。
-      precedentOutcomes,
+      precedentOutcomes: precedentMatched + precedentDiverged + precedentUnaligned,
       precedentMatched,
       precedentDiverged,
       precedentUnaligned,
@@ -97,11 +119,9 @@ export function createSemanticMemory({ maxEntries = 96 } = {}) {
     reset() {
       contextual.clear();
       observations = 0;
-      hintLookups = 0;
       hintHits = 0;
       hintMisses = 0;
       hintSuppressedConflicts = 0;
-      precedentOutcomes = 0;
       precedentMatched = 0;
       precedentDiverged = 0;
       precedentUnaligned = 0;
@@ -113,11 +133,11 @@ export function createSemanticMemory({ maxEntries = 96 } = {}) {
       if (!alignments || typeof alignments !== 'object' || Array.isArray(alignments)) return;
 
       for (const candidate of candidates) {
-        if (!candidate || candidate.kind === 'locked' || candidate.kind === 'fixed' || candidate.kind === 'structural') continue;
+        if (!acceptsPrecedent(candidate)) continue;
         const term = String(candidate.term || '').trim();
-        const raw = String(alignments[term] || '').trim();
-        const normalized = normalizeRenderedForComparison(raw);
-        if (!term || !raw || !normalized || !targetText.includes(raw)) continue;
+        const rendering = validRendering(alignments, term, targetText);
+        if (!term || !rendering) continue;
+        const { raw, normalized } = rendering;
         const trigger = contextTrigger(source, term);
         const key = keyFor(candidate, trigger);
         if (!key) continue;
@@ -148,14 +168,13 @@ export function createSemanticMemory({ maxEntries = 96 } = {}) {
       for (const unit of items || []) {
         const source = String(unit?.text || '');
         for (const candidate of candidates || []) {
-          if (!candidate || candidate.kind === 'locked' || candidate.kind === 'fixed' || candidate.kind === 'structural') continue;
+          if (!acceptsPrecedent(candidate)) continue;
           const term = String(candidate.term || '').trim();
           if (!term) continue;
           const trigger = contextTrigger(source, term);
           const key = keyFor(candidate, trigger);
           if (!key || seen.has(key)) continue;
           seen.add(key);
-          hintLookups++;
           const row = contextual.get(key);
           if (!row) {
             hintMisses++;
@@ -191,14 +210,12 @@ export function createSemanticMemory({ maxEntries = 96 } = {}) {
       for (const hint of hints || []) {
         const term = String(hint?.term || '').trim();
         if (!term || contextTrigger(source, term) !== hint?.trigger) continue;
-        precedentOutcomes++;
-        const raw = String(aligned[term] || '').trim();
-        const actual = normalizeRenderedForComparison(raw);
-        if (!raw || !actual || !targetText.includes(raw)) {
+        const rendering = validRendering(aligned, term, targetText);
+        if (!rendering) {
           precedentUnaligned++;
           continue;
         }
-        if (actual === hint.normalizedTarget) precedentMatched++;
+        if (rendering.normalized === hint.normalizedTarget) precedentMatched++;
         else precedentDiverged++;
       }
     },

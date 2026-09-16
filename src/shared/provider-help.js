@@ -1,3 +1,7 @@
+import { translateUi } from './ui-language.js';
+
+const sourceText = (...args) => translateUi('简体中文', ...args);
+
 /**
  * 填 Key 和模型时的纠错与提示，纯函数，可测。
  * 目标是让用户不用去翻各家文档：地址粘错了自动纠、Key 明显不对当场提示、
@@ -13,7 +17,7 @@ const TAIL_PATHS = [
   '/v1/messages'
 ];
 
-export function normalizeBase(raw, provider) {
+export function normalizeBase(raw, provider, t = sourceText) {
   let url = String(raw || '').trim();
   if (!url) return { value: '', note: '' };
 
@@ -25,7 +29,7 @@ export function normalizeBase(raw, provider) {
   if (!/^https?:\/\//i.test(url)) {
     if (/^localhost|^127\.|^0\.0\.0\.0|^\[::1\]/.test(url)) url = 'http://' + url;
     else url = 'https://' + url;
-    notes.push('已补上协议头');
+    notes.push(t('已补上协议头'));
   }
 
   url = url.replace(/\/+$/, '');
@@ -36,7 +40,7 @@ export function normalizeBase(raw, provider) {
       const fallback = new URL(provider.defaultBase);
       if (current.pathname === '/' && fallback.pathname !== '/') {
         url += fallback.pathname;
-        notes.push(`已补上 ${fallback.pathname}`);
+        notes.push(t`已补上 ${fallback.pathname}`);
       }
     } catch {
       /* 地址还没填完整，先不动 */
@@ -47,7 +51,7 @@ export function normalizeBase(raw, provider) {
   for (const tail of TAIL_PATHS) {
     if (url.toLowerCase().endsWith(tail)) {
       url = url.slice(0, -tail.length).replace(/\/+$/, '');
-      notes.push('已去掉末尾的接口路径，这里只填到根地址');
+      notes.push(t('已去掉末尾的接口路径，这里只填到根地址'));
       break;
     }
   }
@@ -60,7 +64,7 @@ export function normalizeBase(raw, provider) {
       const def = new URL(provider.defaultBase);
       if (u.hostname === def.hostname && u.pathname.replace(/\/+$/, '') === '') {
         url += '/v1';
-        notes.push('已补上 /v1');
+        notes.push(t('已补上 /v1'));
       }
     } catch {
       /* 地址还没填完整，先不动 */
@@ -74,14 +78,14 @@ export function normalizeBase(raw, provider) {
  * Key 只做软校验：格式不符只提示，不拦截。
  * 各家随时可能换前缀，硬拦会把能用的 Key 挡在外面。
  */
-export function checkKey(key, provider) {
+export function checkKey(key, provider, t = sourceText) {
   const k = String(key || '').trim();
   if (!k) return { level: 'empty', message: '' };
-  if (/\s/.test(k)) return { level: 'warn', message: 'Key 里有空格或换行，多半是复制时带进来的' };
+  if (/\s/.test(k)) return { level: 'warn', message: t('Key 里有空格或换行，多半是复制时带进来的') };
   if (provider?.keyPattern && !new RegExp(provider.keyPattern).test(k)) {
     return {
       level: 'warn',
-      message: `这家的 Key 通常形如 ${provider.keyHint || '（见文档）'}，确认没贴错？`
+      message: t`这家的 Key 通常形如 ${provider.keyHint || t('（见文档）')}，确认没贴错？`
     };
   }
   return { level: 'ok', message: '' };

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Just Translate",
-  "version": "16.0",
+  "version": "0.17.7",
   "description": "只做翻译：自带模型或免 Key 的沉浸式双语网页翻译。整页优先，超限自动分块。",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -58,7 +58,8 @@
       "resources": [
         "src/content/*.js",
         "src/shared/*.js",
-        "src/prompt/*.js"
+        "src/prompt/*.js",
+        "assets/content.css"
       ],
       "matches": [
         "<all_urls>"

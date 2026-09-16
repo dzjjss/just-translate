@@ -1,15 +1,17 @@
 import { LIMITS } from '../shared/constants.js';
 
+const concurrencyLimit = value => Math.min(8, Math.max(1, Math.floor(Number(value) || 1)));
+
 /** 全局并发闸门：所有标签页共用一个，避免开五个页面把 API 打爆。 */
 export class Queue {
   constructor(limit = 3) {
-    this.limit = Math.max(1, limit);
+    this.limit = concurrencyLimit(limit);
     this.active = 0;
     this.pending = [];
   }
 
   setLimit(n) {
-    this.limit = Math.max(1, Number(n) || 1);
+    this.limit = concurrencyLimit(n);
     this.#drain();
   }
 
@@ -53,31 +55,31 @@ function abortError(signal) {
 /** 可被打断的 sleep：退避等待期间点停止，不该再等满 8 秒才发现 */
 function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        reject(abortError(signal));
-      },
-      { once: true }
-    );
+    const abort = () => { clearTimeout(timer); reject(abortError(signal)); };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, Math.min(2147483647, Math.max(0, ms)));
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
   });
 }
 
 /** 指数退避 + 抖动；只重试 retryable 错误，尊重 Retry-After。 */
 export async function withRetry(fn, { retries = LIMITS.MAX_RETRIES, signal, onRetry } = {}) {
   let attempt = 0;
+  let previousError = null;
   for (;;) {
     if (signal?.aborted) throw abortError(signal);
     try {
-      return await fn(attempt);
+      return await fn(attempt, previousError);
     } catch (e) {
       if (signal?.aborted || e?.name === 'AbortError') throw e;
       if (attempt >= retries || !e?.retryable) throw e;
       const backoff = e.retryAfterMs || Math.min(8000, 600 * 2 ** attempt) + Math.random() * 400;
       onRetry?.(attempt + 1, e, backoff);
       await sleep(backoff, signal);
+      previousError = e;
       attempt++;
     }
   }

@@ -17,7 +17,7 @@ export const PRESETS = {
     guidance: [
       'DOMAIN: software / networking / engineering documentation.',
       'Keep every identifier untranslated and byte-identical: API names, CLI flags, env vars, file paths, protocol names, error codes, config keys, type names.',
-      'Translate a term consistently across the whole batch; never alternate between two renderings.',
+      'Reuse a rendering across the batch only for the same sense and role. The source sentence and neighboring context may call for different renderings of the same word.',
       'When a term has an established local convention, use it; otherwise keep the English term and do not invent a neologism.',
       'Imperative instructions stay imperative.'
     ].join('\n')

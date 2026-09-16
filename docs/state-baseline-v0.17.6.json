@@ -1,0 +1,1362 @@
+[
+  {
+    "file": "src/background/cache.js",
+    "owner": "module",
+    "name": "dirty",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/cache.js",
+    "owner": "module",
+    "name": "flushTimer",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/cache.js",
+    "owner": "module",
+    "name": "generation",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/cache.js",
+    "owner": "module",
+    "name": "loading",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/cache.js",
+    "owner": "module",
+    "name": "mem",
+    "kind": "Map",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/cache.js",
+    "owner": "module",
+    "name": "persistence",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/cache.js",
+    "owner": "putCached",
+    "name": "record",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "contextScope",
+      "t",
+      "ts"
+    ]
+  },
+  {
+    "file": "src/background/event-log.js",
+    "owner": "module",
+    "name": "lifecycleWrites",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/event-log.js",
+    "owner": "module",
+    "name": "writeFailures",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/execution.js",
+    "owner": "createExecution",
+    "name": "failure",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/background/execution.js",
+    "owner": "createExecution",
+    "name": "knownUsage",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/background/execution.js",
+    "owner": "createExecution",
+    "name": "observedResponses",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/background/execution.js",
+    "owner": "createExecution",
+    "name": "unknownUsage",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/background/machine-translation.js",
+    "owner": "packMachineBatch",
+    "name": "parts",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/background/machine-translation.js",
+    "owner": "parseMachineBatch",
+    "name": "map",
+    "kind": "Map",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/background/machine-translation.js",
+    "owner": "parseMachineBatch",
+    "name": "record",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "map",
+      "missing",
+      "parsed"
+    ]
+  },
+  {
+    "file": "src/background/machine-translation.js",
+    "owner": "translateMachineWithRecovery",
+    "name": "accepted",
+    "kind": "Map",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/background/preflight-cache.js",
+    "owner": "preflight-entry",
+    "name": "record",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "createdAt",
+      "profile",
+      "requestId"
+    ]
+  },
+  {
+    "file": "src/background/providers/openai.js",
+    "owner": "module",
+    "name": "noJsonMode",
+    "kind": "Set",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/queue.js",
+    "owner": "add",
+    "name": "record",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "reject",
+      "resolve",
+      "signal",
+      "task"
+    ]
+  },
+  {
+    "file": "src/background/queue.js",
+    "owner": "class",
+    "name": "this.active",
+    "kind": "field",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/queue.js",
+    "owner": "class",
+    "name": "this.limit",
+    "kind": "field",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/queue.js",
+    "owner": "class",
+    "name": "this.pending",
+    "kind": "field",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/queue.js",
+    "owner": "sleep",
+    "name": "timer",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/background/router.js",
+    "owner": "module",
+    "name": "labSample",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/service-worker.js",
+    "owner": "module",
+    "name": "broadcastGeneration",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/sessions.js",
+    "owner": "module",
+    "name": "sessions",
+    "kind": "Map",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/background/sessions.js",
+    "owner": "openSession",
+    "name": "record",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "controller",
+      "settings"
+    ]
+  },
+  {
+    "file": "src/background/translation-cache.js",
+    "owner": "lookup",
+    "name": "record",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "hits",
+      "misses"
+    ]
+  },
+  {
+    "file": "src/background/translator.js",
+    "owner": "module",
+    "name": "queue",
+    "kind": "Queue",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/connection.js",
+    "owner": "module",
+    "name": "connections",
+    "kind": "WeakMap",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/digest.js",
+    "owner": "buildPlainDigest",
+    "name": "chars",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/content/digest.js",
+    "owner": "buildPlainDigest",
+    "name": "out",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/content/extractor.js",
+    "owner": "makeUnit",
+    "name": "record",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "anchor",
+      "el",
+      "hash",
+      "id",
+      "mode",
+      "node",
+      "role",
+      "srcSize",
+      "state",
+      "tag",
+      "text"
+    ]
+  },
+  {
+    "file": "src/content/extractor.js",
+    "owner": "module",
+    "name": "nextId",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/extractor.js",
+    "owner": "unit-writes",
+    "name": "node",
+    "kind": "record-write",
+    "lifetime": "schema-write",
+    "fields": []
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "bindEvents",
+    "name": "menu",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "hidden"
+    ]
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "flash",
+    "name": "tip",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "dataset",
+      "hidden",
+      "textContent"
+    ]
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "config",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "drag",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "moved"
+    ]
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "flashTimer",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "handlers",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "host",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "dataset",
+      "id"
+    ]
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "onFullscreen",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "outsideClick",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "pressTimer",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "root",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "shell",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "className",
+      "innerHTML",
+      "style"
+    ]
+  },
+  {
+    "file": "src/content/float-widget.js",
+    "owner": "module",
+    "name": "watchdog",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/hud.js",
+    "owner": "module",
+    "name": "entry",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "host",
+      "root"
+    ]
+  },
+  {
+    "file": "src/content/hud.js",
+    "owner": "module",
+    "name": "handlers",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "acceptPreflight",
+    "name": "app.preflightSnapshot",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "createdAt",
+      "hash",
+      "identity",
+      "profile",
+      "reused",
+      "url"
+    ]
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "app",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "background",
+      "config",
+      "context",
+      "pageConfig",
+      "phase",
+      "preflightSnapshot",
+      "presetId",
+      "presetReason",
+      "userRules"
+    ]
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "consistencyTelemetry",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "diagnosticRequestSequence",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "diagnostics",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "heartbeatTimer",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "mutationWatcher",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "page",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "repeatedSourceTerms",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "scheduler",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "semanticMemory",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "statusTimer",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/main.js",
+    "owner": "module",
+    "name": "translationRuntime",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "boundaryRecoveryCount",
+      "budgetMode",
+      "cachedUnitsExcludedFromObservation",
+      "estimatedInputTokens",
+      "estimatedOutputTokens",
+      "estimatedTotalTokens",
+      "invalidResponseFailedUnits",
+      "invalidResponseSplitCount",
+      "machineContextChars",
+      "modeReason",
+      "recoveredContext",
+      "sourceChars",
+      "sourceLimitFailedUnits",
+      "splitRetryCount",
+      "translateRequestCount",
+      "translationMode",
+      "unitCount",
+      "wholePageCacheHit"
+    ]
+  },
+  {
+    "file": "src/content/observer.js",
+    "owner": "createMutationWatcher",
+    "name": "events",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/observer.js",
+    "owner": "createMutationWatcher",
+    "name": "observer",
+    "kind": "MutationObserver",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/observer.js",
+    "owner": "createMutationWatcher",
+    "name": "timer",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/renderer.js",
+    "owner": "applyPresentation",
+    "name": "root",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "dataset"
+    ]
+  },
+  {
+    "file": "src/content/renderer.js",
+    "owner": "module",
+    "name": "colorMql",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "_h"
+    ]
+  },
+  {
+    "file": "src/content/renderer.js",
+    "owner": "unit-writes",
+    "name": "node",
+    "kind": "record-write",
+    "lifetime": "schema-write",
+    "fields": []
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "createSemanticMemory",
+    "name": "contextual",
+    "kind": "Map",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "createSemanticMemory",
+    "name": "hintHits",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "createSemanticMemory",
+    "name": "hintMisses",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "createSemanticMemory",
+    "name": "hintSuppressedConflicts",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "createSemanticMemory",
+    "name": "observations",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "createSemanticMemory",
+    "name": "precedentDiverged",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "createSemanticMemory",
+    "name": "precedentMatched",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "createSemanticMemory",
+    "name": "precedentUnaligned",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "observe",
+    "name": "row",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "lemma",
+      "observations",
+      "targets",
+      "term",
+      "trigger"
+    ]
+  },
+  {
+    "file": "src/content/semantic-memory.js",
+    "owner": "observe",
+    "name": "targetRow",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "count",
+      "normalized",
+      "raws"
+    ]
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "beginGate",
+    "name": "current",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "bypassCache",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "drift",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "errorStreak",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "count",
+      "msg"
+    ]
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "gate",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "gateGeneration",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "lifecycle",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "owners",
+    "kind": "WeakMap",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "preflightGeneration",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "profile",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "tokens",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "cachedUnits",
+      "preflight",
+      "translation"
+    ]
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "trail",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "createPageSession",
+    "name": "units",
+    "kind": "Map",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "module",
+    "name": "sequence",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "unit-writes",
+    "name": "attempt",
+    "kind": "record-write",
+    "lifetime": "schema-write",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "unit-writes",
+    "name": "path",
+    "kind": "record-write",
+    "lifetime": "schema-write",
+    "fields": []
+  },
+  {
+    "file": "src/content/session.js",
+    "owner": "unit-writes",
+    "name": "state",
+    "kind": "record-write",
+    "lifetime": "schema-write",
+    "fields": []
+  },
+  {
+    "file": "src/content/shadow-styles.js",
+    "owner": "module",
+    "name": "styles",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "loading",
+      "sheet"
+    ]
+  },
+  {
+    "file": "src/content/term-consistency.js",
+    "owner": "addOccurrence",
+    "name": "row",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "count",
+      "key",
+      "kind",
+      "lemma",
+      "roles",
+      "surfaces",
+      "term",
+      "unitSet"
+    ]
+  },
+  {
+    "file": "src/content/term-consistency.js",
+    "owner": "createTermTelemetry",
+    "name": "alignedByKind",
+    "kind": "Map",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/term-consistency.js",
+    "owner": "createTermTelemetry",
+    "name": "expectedByKind",
+    "kind": "Map",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/term-consistency.js",
+    "owner": "createTermTelemetry",
+    "name": "rows",
+    "kind": "Map",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/term-consistency.js",
+    "owner": "ensure",
+    "name": "row",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "kind",
+      "lemma",
+      "rawVariants",
+      "samples",
+      "source",
+      "sourceRoles",
+      "sourceSurfaces",
+      "trust",
+      "variants"
+    ]
+  },
+  {
+    "file": "src/content/term-consistency.js",
+    "owner": "extractRepeatedSourceTerms",
+    "name": "rows",
+    "kind": "Map",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/content/translation-scheduler.js",
+    "owner": "createTranslationScheduler",
+    "name": "chunkChars",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/translation-scheduler.js",
+    "owner": "createTranslationScheduler",
+    "name": "drainPromise",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/translation-scheduler.js",
+    "owner": "createTranslationScheduler",
+    "name": "firstBatchDone",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/translation-scheduler.js",
+    "owner": "createTranslationScheduler",
+    "name": "inflight",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/translation-scheduler.js",
+    "owner": "createTranslationScheduler",
+    "name": "modePlan",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/translation-scheduler.js",
+    "owner": "createTranslationScheduler",
+    "name": "pending",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/translation-scheduler.js",
+    "owner": "createTranslationScheduler",
+    "name": "timer",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/translation-scheduler.js",
+    "owner": "flush",
+    "name": "current",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/content/ui-host.js",
+    "owner": "createHost",
+    "name": "bodyObserver",
+    "kind": "MutationObserver",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/ui-host.js",
+    "owner": "createHost",
+    "name": "host",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "id"
+    ]
+  },
+  {
+    "file": "src/content/ui-host.js",
+    "owner": "createHost",
+    "name": "observer",
+    "kind": "MutationObserver",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/ui-host.js",
+    "owner": "module",
+    "name": "fullscreenHooked",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/content/ui-host.js",
+    "owner": "module",
+    "name": "HOSTS",
+    "kind": "Set",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/popup/popup.js",
+    "owner": "module",
+    "name": "activeSettingsTab",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/popup/popup.js",
+    "owner": "module",
+    "name": "form",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/popup/popup.js",
+    "owner": "module",
+    "name": "liveTimers",
+    "kind": "Map",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/popup/popup.js",
+    "owner": "module",
+    "name": "permissionGranted",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/popup/popup.js",
+    "owner": "module",
+    "name": "tabInfo",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "injected",
+      "state"
+    ]
+  },
+  {
+    "file": "src/popup/popup.js",
+    "owner": "onExportMd",
+    "name": "a",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "download",
+      "href"
+    ]
+  },
+  {
+    "file": "src/popup/settings-form.js",
+    "owner": "createSettingsForm",
+    "name": "drafts",
+    "kind": "Map",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/popup/settings-form.js",
+    "owner": "createSettingsForm",
+    "name": "providerId",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/popup/settings-form.js",
+    "owner": "createSettingsForm",
+    "name": "saved",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/prompt/build.js",
+    "owner": "parseTranslationResponse",
+    "name": "map",
+    "kind": "Map",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/shared/action-feedback.js",
+    "owner": "createActionFeedback",
+    "name": "sequence",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/shared/action-feedback.js",
+    "owner": "module",
+    "name": "jobs",
+    "kind": "WeakMap",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/shared/action-feedback.js",
+    "owner": "module",
+    "name": "locks",
+    "kind": "Set",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/shared/action-feedback.js",
+    "owner": "run",
+    "name": "record",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": [
+      "pending",
+      "timer"
+    ]
+  },
+  {
+    "file": "src/shared/action-feedback.js",
+    "owner": "waitForReply",
+    "name": "timer",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/shared/constants.js",
+    "owner": "module",
+    "name": "record",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "accentColorDark",
+      "accentColorLight",
+      "accounts",
+      "apiBase",
+      "apiKey",
+      "autoPreflight",
+      "background",
+      "concurrency",
+      "contentRootOnly",
+      "customPrompt",
+      "debug",
+      "displayMode",
+      "floatButton",
+      "floatOffset",
+      "floatPosition",
+      "maxCharsPerChunk",
+      "minTextLength",
+      "model",
+      "presetId",
+      "providerId",
+      "rulesText",
+      "schemaVersion",
+      "semanticConsistency",
+      "semanticPrecedent",
+      "siteRules",
+      "skipSelectors",
+      "smartFilter",
+      "targetLang",
+      "textColorDark",
+      "textColorLight",
+      "translationColor",
+      "translationFont",
+      "translationStyle",
+      "useCache",
+      "wholePageTranslation"
+    ]
+  },
+  {
+    "file": "src/shared/diagnostics.js",
+    "owner": "createDiagnosticLog",
+    "name": "events",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/shared/diagnostics.js",
+    "owner": "createDiagnosticLog",
+    "name": "sequence",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/shared/diagnostics.js",
+    "owner": "createDiagnosticLog",
+    "name": "startedAt",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/shared/diagnostics.js",
+    "owner": "module",
+    "name": "logSequence",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/shared/diagnostics.js",
+    "owner": "record",
+    "name": "row",
+    "kind": "record-schema",
+    "lifetime": "schema",
+    "fields": [
+      "at",
+      "details",
+      "elapsedMs",
+      "event",
+      "n"
+    ]
+  },
+  {
+    "file": "src/shared/logger.js",
+    "owner": "class",
+    "name": "this.body",
+    "kind": "field",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/shared/logger.js",
+    "owner": "class",
+    "name": "this.name",
+    "kind": "field",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/shared/logger.js",
+    "owner": "class",
+    "name": "this.retryable",
+    "kind": "field",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/shared/logger.js",
+    "owner": "class",
+    "name": "this.retryAfterMs",
+    "kind": "field",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/shared/logger.js",
+    "owner": "class",
+    "name": "this.status",
+    "kind": "field",
+    "lifetime": "request-or-scan",
+    "fields": []
+  },
+  {
+    "file": "src/shared/logger.js",
+    "owner": "module",
+    "name": "debugOn",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  },
+  {
+    "file": "src/shared/rules-tree.js",
+    "owner": "buildSources",
+    "name": "out",
+    "kind": "binding",
+    "lifetime": "request-or-scan",
+    "fields": [
+      "domain",
+      "hard",
+      "keep",
+      "preferred",
+      "principle",
+      "risky"
+    ]
+  },
+  {
+    "file": "src/shared/settings.js",
+    "owner": "module",
+    "name": "settingsWrites",
+    "kind": "binding",
+    "lifetime": "retained",
+    "fields": []
+  }
+]

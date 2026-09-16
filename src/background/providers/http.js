@@ -28,7 +28,7 @@ export async function readError(res, url) {
   } catch {
     /* ignore */
   }
-  const retryAfter = Number(res.headers.get('retry-after')) || 0;
+  const retryAfter = retryDelay(res.headers.get('retry-after'));
   const retryable = res.status === 408 || res.status === 429 || res.status >= 500;
   const hint =
     res.status === 401 || res.status === 403
@@ -39,10 +39,20 @@ export async function readError(res, url) {
           ? '触发速率限制，降低并发或稍后重试'
           : `HTTP ${res.status}`;
 
-  return new ApiError(hint, {
+  const error = new ApiError(hint, {
     status: res.status,
     body,
     retryable,
-    retryAfterMs: retryAfter * 1000
+    retryAfterMs: retryAfter
   });
+  error.recoverBySplit = [400, 413].includes(res.status) && /context_length_exceeded|maximum context|context window|too many tokens/i.test(body);
+  return error;
+}
+
+/** Retry-After may be seconds or an HTTP date. Invalid/past values mean no delay. */
+function retryDelay(value) {
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
 }

@@ -1,4 +1,5 @@
 import { normalizeRules } from './rules-yaml.js';
+import { translateUi } from './ui-language.js';
 
 /**
  * 规则的树形只读视图。
@@ -23,7 +24,7 @@ function tag(text, source) {
   return `<span class="rt-tag" data-src="${source || 'auto'}">${esc(text)}</span>`;
 }
 
-function pairRows(map, sources, kind) {
+function pairRows(map, sources, kind, t) {
   return Object.entries(map)
     .map(([k, v]) => {
       const src = sources?.[kind]?.[k] || 'auto';
@@ -31,7 +32,7 @@ function pairRows(map, sources, kind) {
         <code class="rt-k">${esc(k)}</code>
         <span class="rt-arrow">→</span>
         <span class="rt-v">${esc(v)}</span>
-        <span class="rt-src" title="来源">${SOURCE_LABEL[src] || src}</span>
+        <span class="rt-src" title="${t('来源')}">${t(SOURCE_LABEL[src] || src)}</span>
       </div>`;
     })
     .join('');
@@ -41,37 +42,38 @@ function pairRows(map, sources, kind) {
  * 生成树形 HTML。sources 可选，形如 { hard: {term: 'user'}, risky: {...} }。
  * 返回字符串而不是节点：调用方只在自己的面板里用，字符串更好测也更好拼。
  */
-export function renderRulesTree(rules, sources) {
+export function renderRulesTree(rules, sources, language = '简体中文') {
+  const t = (...args) => translateUi(language, ...args);
   const r = normalizeRules(rules);
   const blocks = [];
 
   if (r.principle) {
     // 单独一档且排在最前：它是祈使句，作用力比下面几档的词条映射更大
     blocks.push(`<section class="rt-sec rt-principle">
-      <h4>本页原则 <em>压过通用领域指导</em></h4>
+      <h4>${t('本页原则')} <em>${t('压过通用领域指导')}</em></h4>
       <p class="rt-principle-text" data-src="${sources?.principle || 'auto'}">${esc(r.principle)}</p>
     </section>`);
   }
 
   if (r.domain.length) {
     blocks.push(`<section class="rt-sec rt-domain">
-      <h4>领域</h4>
+      <h4>${t('领域')}</h4>
       <div class="rt-tags">${r.domain.map((d) => tag(d, sources?.domain?.[d])).join('')}</div>
-      <p class="rt-note">领域义永远压过日常义</p>
+      <p class="rt-note">${t('领域解释仅供参考，以原句及邻接上下文为准')}</p>
     </section>`);
   }
 
   if (Object.keys(r.hard).length) {
     blocks.push(`<section class="rt-sec rt-hard">
-      <h4>锁定 <em>不许因语句流畅度而改</em></h4>
-      ${pairRows(r.hard, sources, 'hard')}
+      <h4>${t('锁定')} <em>${t('不许因语句流畅度而改')}</em></h4>
+      ${pairRows(r.hard, sources, 'hard', t)}
     </section>`);
   }
 
   if (Object.keys(r.preferred).length) {
     blocks.push(`<section class="rt-sec rt-preferred">
-      <h4>优先 <em>倾向，允许语境覆盖</em></h4>
-      ${pairRows(r.preferred, sources, 'preferred')}
+      <h4>${t('优先')} <em>${t('倾向，允许语境覆盖')}</em></h4>
+      ${pairRows(r.preferred, sources, 'preferred', t)}
     </section>`);
   }
 
@@ -83,25 +85,25 @@ export function renderRulesTree(rules, sources) {
         const src = sources?.risky?.[w] || 'auto';
         return `<div class="rt-risk" data-src="${src}">
           <code class="rt-k">${esc(w)}</code>
-          <span class="rt-sense">${sense ? esc(sense) : '未注明义项，按句判断'}</span>
-          <span class="rt-src">${SOURCE_LABEL[src] || src}</span>
+          <span class="rt-sense">${sense ? esc(sense) : t('未注明义项，按句判断')}</span>
+          <span class="rt-src">${t(SOURCE_LABEL[src] || src)}</span>
         </div>`;
       })
       .join('');
     blocks.push(`<section class="rt-sec rt-risky">
-      <h4>风险词 <em>给义项，不给译法</em></h4>
+      <h4>${t('风险词')} <em>${t('给义项，不给译法')}</em></h4>
       ${rows}
     </section>`);
   }
 
   if (r.keep.length) {
     blocks.push(`<section class="rt-sec rt-keep">
-      <h4>不翻</h4>
+      <h4>${t('不翻')}</h4>
       <div class="rt-tags">${r.keep.map((k) => tag(k, sources?.keep?.[k])).join('')}</div>
     </section>`);
   }
 
-  if (!blocks.length) return '<p class="rt-empty">当前没有额外翻译约束。普通页面通常不需要；翻译时仍会自动读取整页语境。</p>';
+  if (!blocks.length) return `<p class="rt-empty">${t('当前没有额外翻译约束。普通页面通常不需要；翻译时仍会自动读取整页语境。')}</p>`;
   return blocks.join('');
 }
 

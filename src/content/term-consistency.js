@@ -22,7 +22,11 @@ const STOP = new Set([
   'already', 'also', 'among', 'another', 'because', 'before', 'between', 'both', 'every', 'first', 'from', 'great', 'here',
   'into', 'itself', 'more', 'most', 'much', 'never', 'other', 'over', 'same', 'since', 'some', 'still', 'such', 'than', 'then',
   'there', 'thing', 'through', 'under', 'until', 'very', 'while', 'with', 'without', 'however', 'therefore', 'perhaps',
-  'although', 'though'
+  'although', 'though',
+  // 高频限定词、代词、方向副词/介词会在长文中占满 lexical 预算，
+  // 却几乎不会是需要跨段复用的译名。预检标注为 risky 的同词仍会显式加回。
+  'all', 'any', 'him', 'only', 'even', 'two', 'upon', 'toward', 'towards',
+  'across', 'away', 'back', 'down', 'now', 'out'
 ]);
 
 // 人称代词缩写仍然只是语法词。“you'll”不能因为带撇号就绕过 you / will 停用词，
@@ -45,6 +49,9 @@ const TAXONOMY = Object.freeze({
   UNKNOWN: 'UNKNOWN'
 });
 
+function increment(counts, key) { counts.set(key, (counts.get(key) || 0) + 1); }
+function sumCounts(counts) { return [...counts.values()].reduce((total, count) => total + count, 0); }
+
 function textOf(unit) {
   return typeof unit === 'string' ? unit : String(unit?.text || '');
 }
@@ -57,7 +64,7 @@ function identityKey(term, kind = 'lexical') {
   const raw = String(term || '').trim();
   if (kind === 'fixed') return `fixed:${raw}`;
   if (kind === 'locked') return `locked:${raw.toLowerCase()}`;
-  // lexical / suggested / structural 共用 lemma identity，避免 COMMON 与 common 被人为拆开。
+  // lexical / suggested / risky / structural 共用 lemma identity，避免 COMMON 与 common 被人为拆开。
   return `lexical:${raw.toLowerCase()}`;
 }
 
@@ -115,7 +122,7 @@ function isStructuralHeadingToken(token, unit) {
 function rankKind(kind) {
   if (kind === 'locked') return 5;
   if (kind === 'fixed') return 4;
-  if (kind === 'suggested') return 3;
+  if (kind === 'suggested' || kind === 'risky') return 3;
   if (kind === 'lexical') return 2;
   return 1; // structural
 }
@@ -123,7 +130,7 @@ function rankKind(kind) {
 function addOccurrence(map, surface, unitIndex, kind, unitRole = 'body') {
   surface = String(surface || '').trim();
   if (!surface) return;
-  const normalizedKind = ['fixed', 'structural', 'suggested'].includes(kind) ? kind : 'lexical';
+  const normalizedKind = ['fixed', 'structural', 'suggested', 'risky'].includes(kind) ? kind : 'lexical';
   const key = identityKey(surface, normalizedKind);
   let row = map.get(key);
   if (!row) {
@@ -163,6 +170,20 @@ export function findSourceTerm(text, term, { caseSensitive = false } = {}) {
 
 export function sourceContainsTerm(text, term, options = {}) {
   return Boolean(findSourceTerm(text, term, options));
+}
+
+/** Source matching only, not a claim that a suggested meaning fits each occurrence. */
+export function profileSourceCoverage(profile, units) {
+  const texts = Array.from(units, textOf);
+  const sections = Object.fromEntries(['preferred', 'risky'].map(kind => {
+    const terms = Object.keys(profile?.[kind] || {});
+    const unmatched = terms.filter(term => {
+      const pattern = makeBoundaryRegex(term, false);
+      return !texts.some(text => pattern.test(text));
+    });
+    return [kind, { total: terms.length, matched: terms.length - unmatched.length, unmatched }];
+  }));
+  return { scope: 'current-translation-units', ...sections };
 }
 
 /** 从源文单元抽取跨单元重复观察对象。 */
@@ -215,6 +236,16 @@ export function extractRepeatedSourceTerms(units, { minUnits = 2, maxTerms = 48 
 }
 
 /** 当前批只取真正命中的观察对象，避免把整页候选反复塞进 prompt。 */
+function matchingSurface(row, texts, baseTerm) {
+  if (row.kind === 'fixed') return texts.some(text => sourceContainsTerm(text, baseTerm, { caseSensitive: true })) ? baseTerm : null;
+  const forms = (row.surfaces || []).map(value => String(value?.surface || '')).filter(Boolean);
+  for (const text of texts) {
+    const surface = forms.find(value => sourceContainsTerm(text, value, { caseSensitive: true }));
+    if (surface) return surface;
+  }
+  return texts.some(text => sourceContainsTerm(text, baseTerm, { caseSensitive: false })) ? baseTerm : null;
+}
+
 export function matchTrackedTermRows(candidates, items, { maxTerms = 16 } = {}) {
   const texts = (items || []).map(textOf);
   const out = [];
@@ -226,24 +257,8 @@ export function matchTrackedTermRows(candidates, items, { maxTerms = 16 } = {}) 
     const collisionKey = lexicalKey(row.lemma || baseTerm);
     if (seen.has(collisionKey)) continue;
 
-    let term = baseTerm;
-    let matched = false;
-    if (kind === 'fixed') {
-      matched = texts.some((text) => sourceContainsTerm(text, term, { caseSensitive: true }));
-    } else {
-      const surfaceForms = (row.surfaces || []).map((x) => String(x?.surface || '')).filter(Boolean);
-      outer: for (const text of texts) {
-        for (const surface of surfaceForms) {
-          if (sourceContainsTerm(text, surface, { caseSensitive: true })) {
-            term = surface;
-            matched = true;
-            break outer;
-          }
-        }
-      }
-      if (!matched) matched = texts.some((text) => sourceContainsTerm(text, baseTerm, { caseSensitive: false }));
-    }
-    if (!matched) continue;
+    const term = matchingSurface(row, texts, baseTerm);
+    if (!term) continue;
 
     out.push({
       term,
@@ -257,6 +272,50 @@ export function matchTrackedTermRows(candidates, items, { maxTerms = 16 } = {}) 
     if (out.length >= maxTerms) break;
   }
   return out;
+}
+
+/**
+ * 观测候选使用分层预算。整页请求会同时命中几乎所有预检建议；如果继续按
+ * locked -> suggested -> lexical 的单队列截断，SUGGESTED 会把本地发现的重复词
+ * 全部挤掉，让 unknown: 0 变成观测范围缩小后的假象。
+ */
+export function selectTrackedTermRows(
+  candidates,
+  items,
+  { maxTerms = 32, minLexicalTerms = 8 } = {}
+) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const lexicalCandidates = list.filter((row) => (row?.kind || 'lexical') === 'lexical');
+  const priorityCandidates = list.filter((row) => (row?.kind || 'lexical') !== 'lexical');
+  const matchedPriority = matchTrackedTermRows(priorityCandidates, items, { maxTerms: priorityCandidates.length });
+  const priorityKeys = new Set(matchedPriority.map((row) => lexicalKey(row.lemma || row.term)));
+  const matchedLexical = matchTrackedTermRows(lexicalCandidates, items, { maxTerms: lexicalCandidates.length })
+    .filter((row) => !priorityKeys.has(lexicalKey(row.lemma || row.term)));
+
+  const totalLimit = Math.max(0, Number(maxTerms) || 0);
+  const lexicalReserve = Math.min(
+    Math.max(0, Number(minLexicalTerms) || 0),
+    matchedLexical.length,
+    totalLimit
+  );
+  const priorityLimit = Math.max(0, totalLimit - lexicalReserve);
+  const selected = [
+    ...matchedPriority.slice(0, priorityLimit),
+    ...matchedLexical.slice(0, lexicalReserve)
+  ];
+
+  // 某一层不足时把空位还给另一层，避免为了配额主动浪费观测预算。
+  if (selected.length < totalLimit) {
+    const seen = new Set(selected.map((row) => lexicalKey(row.lemma || row.term)));
+    for (const row of [...matchedPriority.slice(priorityLimit), ...matchedLexical.slice(lexicalReserve)]) {
+      const key = lexicalKey(row.lemma || row.term);
+      if (!key || seen.has(key)) continue;
+      selected.push(row);
+      seen.add(key);
+      if (selected.length >= totalLimit) break;
+    }
+  }
+  return selected;
 }
 
 export function matchTrackedTerms(candidates, items, options) {
@@ -314,7 +373,13 @@ function classifyRow(row, variants) {
     return {
       taxonomy: TAXONOMY.STABLE,
       consistency: 'CONSISTENT',
-      evidence: [row.kind === 'suggested' ? 'PREFLIGHT_SUGGESTION_ONLY' : 'ONE_TARGET_VARIANT_SO_FAR']
+      evidence: [
+        row.kind === 'suggested'
+          ? 'PREFLIGHT_SUGGESTION_ONLY'
+          : row.kind === 'risky'
+            ? 'PREFLIGHT_RISKY_SENSE'
+            : 'ONE_TARGET_VARIANT_SO_FAR'
+      ]
     };
   }
 
@@ -325,10 +390,18 @@ function classifyRow(row, variants) {
   };
 }
 
+function appendSample(row, { unit, sourceText, targetText, sourceHit, renderedRaw, rendered }, limit) {
+  if (row.samples.length >= limit) return;
+  row.samples.push({
+    id: unit?.id ?? null, source: clip(sourceText), target: clip(targetText),
+    localContext: contextAround(sourceText, sourceHit.index, sourceHit.surface.length),
+    sourceSurface: sourceHit.surface, sourceUnitRole: unit?.role || 'body',
+    sourceRoleShape: null, renderedRaw, rendered
+  });
+}
+
 export function createTermTelemetry({ maxSamplesPerTerm = 8 } = {}) {
   const rows = new Map();
-  let expectedOccurrences = 0;
-  let alignedOccurrences = 0;
   const expectedByKind = new Map();
   const alignedByKind = new Map();
 
@@ -344,7 +417,6 @@ export function createTermTelemetry({ maxSamplesPerTerm = 8 } = {}) {
         lemma: candidate?.lemma || (kind === 'fixed' ? term : lexicalKey(term)),
         kind,
         trust: candidate?.trust || null,
-        occurrenceCount: 0,
         variants: new Map(),
         rawVariants: new Map(),
         sourceSurfaces: new Map(),
@@ -363,8 +435,6 @@ export function createTermTelemetry({ maxSamplesPerTerm = 8 } = {}) {
   return Object.freeze({
     reset() {
       rows.clear();
-      expectedOccurrences = 0;
-      alignedOccurrences = 0;
       expectedByKind.clear();
       alignedByKind.clear();
     },
@@ -380,9 +450,8 @@ export function createTermTelemetry({ maxSamplesPerTerm = 8 } = {}) {
         const caseSensitive = kind === 'fixed';
         const sourceHit = findSourceTerm(sourceText, term, { caseSensitive });
         if (!term || !sourceHit) continue;
-        expectedOccurrences++;
-        const metricKind = kind === 'locked' || kind === 'fixed' ? 'fixed' : kind === 'structural' ? 'structural' : kind === 'suggested' ? 'suggested' : 'lexical';
-        expectedByKind.set(metricKind, (expectedByKind.get(metricKind) || 0) + 1);
+        const metricKind = ({ locked: 'fixed', fixed: 'fixed', structural: 'structural', suggested: 'suggested', risky: 'risky' })[kind] || 'lexical';
+        increment(expectedByKind, metricKind);
 
         const hit = aligned.get(term);
         if (!hit) continue;
@@ -391,29 +460,14 @@ export function createTermTelemetry({ maxSamplesPerTerm = 8 } = {}) {
         const rendered = normalizeRenderedForComparison(renderedRaw);
         if (!rendered) continue;
 
-        alignedOccurrences++;
-        alignedByKind.set(metricKind, (alignedByKind.get(metricKind) || 0) + 1);
+        increment(alignedByKind, metricKind);
         const row = ensure(candidate);
         if (!row) continue;
-        row.occurrenceCount++;
-        row.variants.set(rendered, (row.variants.get(rendered) || 0) + 1);
-        row.rawVariants.set(renderedRaw, (row.rawVariants.get(renderedRaw) || 0) + 1);
-        row.sourceSurfaces.set(sourceHit.surface, (row.sourceSurfaces.get(sourceHit.surface) || 0) + 1);
-        row.sourceRoles.set(unit?.role || 'body', (row.sourceRoles.get(unit?.role || 'body') || 0) + 1);
-        if (row.samples.length < maxSamplesPerTerm) {
-          row.samples.push({
-            id: unit?.id ?? null,
-            source: clip(sourceText),
-            localContext: contextAround(sourceText, sourceHit.index, sourceHit.surface.length),
-            sourceSurface: sourceHit.surface,
-            sourceUnitRole: unit?.role || 'body',
-            // v2 兼容字段：不再计算，也不再参与 taxonomy。
-            sourceRoleShape: null,
-            target: clip(targetText),
-            renderedRaw,
-            rendered
-          });
-        }
+        increment(row.variants, rendered);
+        increment(row.rawVariants, renderedRaw);
+        increment(row.sourceSurfaces, sourceHit.surface);
+        increment(row.sourceRoles, unit?.role || 'body');
+        appendSample(row, { unit, sourceText, targetText, sourceHit, renderedRaw, rendered }, maxSamplesPerTerm);
       }
     },
 
@@ -440,7 +494,7 @@ export function createTermTelemetry({ maxSamplesPerTerm = 8 } = {}) {
             consistency: classification.consistency,
             evidence: classification.evidence,
             status: classification.taxonomy,
-            occurrenceCount: row.occurrenceCount,
+            occurrenceCount: sumCounts(row.variants),
             variantCount: variants.length,
             rawVariantCount: rawVariants.length,
             variants,
@@ -456,15 +510,17 @@ export function createTermTelemetry({ maxSamplesPerTerm = 8 } = {}) {
           a.source.localeCompare(b.source)
         );
 
-      const alignmentByKind = Object.fromEntries(['fixed', 'suggested', 'lexical', 'structural'].map((kind) => {
+      const alignmentByKind = Object.fromEntries(['fixed', 'suggested', 'risky', 'lexical', 'structural'].map((kind) => {
         const expected = expectedByKind.get(kind) || 0;
         const aligned = alignedByKind.get(kind) || 0;
         return [kind, { expected, aligned, rate: expected ? aligned / expected : 0 }];
       }));
 
-      const semanticExpected = ['fixed', 'suggested', 'lexical'].reduce((n, kind) => n + (expectedByKind.get(kind) || 0), 0);
-      const semanticAligned = ['fixed', 'suggested', 'lexical'].reduce((n, kind) => n + (alignedByKind.get(kind) || 0), 0);
+      const semanticExpected = ['fixed', 'suggested', 'risky', 'lexical'].reduce((n, kind) => n + (expectedByKind.get(kind) || 0), 0);
+      const semanticAligned = ['fixed', 'suggested', 'risky', 'lexical'].reduce((n, kind) => n + (alignedByKind.get(kind) || 0), 0);
 
+      const expectedOccurrences = sumCounts(expectedByKind);
+      const alignedOccurrences = sumCounts(alignedByKind);
       const summary = {
         taxonomyVersion: 3,
         termsObserved: output.length,

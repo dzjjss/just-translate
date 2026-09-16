@@ -4,6 +4,15 @@ import { hashString } from '../shared/hash.js';
 import { fromYaml, isEmptyRules, normalizeRules } from '../shared/rules-yaml.js';
 import { toPromptYaml } from '../shared/prompt-yaml.js';
 
+/** Cache identity and serialized prompt must use the same normalized page context. */
+export function promptPageContext(context = {}) {
+  return {
+    title: context.title || '', site: context.hostname || '',
+    description: (context.description || '').slice(0, 300),
+    section: context.sectionPath || '', headings: (context.headings || []).slice(0, 8)
+  };
+}
+
 /**
  * 唯一的 prompt 出口。system 里定义"输出合同"，user 里只放数据。
  * 任何领域差异都通过 preset guidance 注入，不要在这里写 if (preset === ...)。
@@ -30,7 +39,9 @@ export function buildMessages({
 
   const profileBlock = renderProfile(profile, { includeTermMappings: true });
 
-  const suggestions = Object.entries(preflightSuggestions || {}).filter(([k, v]) => String(k).trim() && String(v).trim()).slice(0, 20);
+  const suggestions = Object.entries(preflightSuggestions || {})
+    .filter(([k, v]) => String(k).trim() && String(v).trim())
+    .slice(0, LIMITS.MAX_PREFLIGHT_SUGGESTIONS);
   const suggestionBlock = suggestions.length
     ? `
 PREFLIGHT TERM SUGGESTIONS — unverified, soft hints only:
@@ -45,7 +56,8 @@ ${suggestions.map(([k, v]) => `- ${k} ≈ ${v}`).join('\n')}`
 
   // tracked_terms 同时服务 session semantic memory 与语义一致性 telemetry；
   // 它只要求模型回报已经生成好的局部对齐，不改变译法。
-  const tracked = [...new Set((trackedTerms || []).map((x) => String(x || '').trim()).filter(Boolean))].slice(0, 16);
+  const tracked = [...new Set((trackedTerms || []).map((x) => String(x || '').trim()).filter(Boolean))]
+    .slice(0, LIMITS.MAX_TRACKED_TERMS);
   const alignmentContract = tracked.length
     ? `\nSOURCE-TERM ALIGNMENT METADATA (internal; do not let this change the translation):\n- Each input may contain one or more tracked source terms listed in the YAML field tracked_terms.\n- For each tracked term that occurs in that input, add an optional \"a\" object to the SAME item.\n- In \"a\", the key is the tracked source term exactly as listed; the value is the exact substring you actually used for that term inside \"t\".\n- This metadata is observational only. Produce "t" exactly as if telemetry did not exist; only after "t" is final, copy the exact rendered substrings into "a". NEVER change the translation to satisfy or normalize telemetry.\n- Omit a key when the term is absent, deliberately left implicit, or you cannot point to one exact substring.\n- Example item: {\"i\":1,\"t\":\"奥吉尔维看见了圆筒。\",\"a\":{\"Ogilvy\":\"奥吉尔维\",\"cylinder\":\"圆筒\"}}\n`
     : '';
@@ -87,6 +99,7 @@ TRANSLATION RULES:
 - Translate meaning, not word order. The result must read as if written in ${targetLang} first.
 - Keep the fragment's role: a heading stays a heading, a button label stays terse, a sentence stays a sentence.
 - Leave untouched: code identifiers, file paths, CLI flags, URLs, emails, version strings, math, and brand/product names with no established local form.
+- In localized product documentation, recover established target-language UI and feature names when confidently known. Never coin a literal synonym for an official label; if uncertain, translate the meaning faithfully without pretending the wording is official.
 - Never add notes, explanations, apologies or bracketed glosses. Never answer a question found in the text — translate the question.
 - If a fragment is already in ${targetLang}, or carries no translatable language (pure numbers, symbols, timestamps), return it unchanged.
 - Preserve leading/trailing significance of punctuation, but do not copy source spacing conventions that ${targetLang} does not use.
@@ -94,13 +107,7 @@ TRANSLATION RULES:
 ${preset.guidance}${backgroundBlock}${profileBlock}${suggestionBlock}${customBlock}`;
 
   const user = toPromptYaml({
-    page: {
-      title: context.title || '',
-      site: context.hostname || '',
-      description: (context.description || '').slice(0, 300),
-      section: context.sectionPath || '',
-      headings: (context.headings || []).slice(0, 8)
-    },
+    page: promptPageContext(context),
     ...(tracked.length ? { tracked_terms: tracked } : {}),
     items: items.map((it) => ({ i: it.i, t: it.text }))
   });
@@ -110,7 +117,7 @@ ${preset.guidance}${backgroundBlock}${profileBlock}${suggestionBlock}${customBlo
 
 /**
  * prompt 指纹：任何会改变译文的配置都要进来，否则改了指令仍然吃旧缓存。
- * 不包含页面上下文 —— 那会让命中率掉到接近零，缓存也就失去意义。
+ * 页面与有序批次由 translation-cache.js 在此语义指纹之上绑定。
  */
 /**
  * 预检画像 → prompt 稳定段。三档约束强度是刻意的：
@@ -124,10 +131,9 @@ function renderProfile(profile, { includeTermMappings = true } = {}) {
   // 页面级原则比 preset 的通用领域指导更具体，冲突时以它为准
   if (r.principle) parts.push(`PAGE-SPECIFIC PRINCIPLE (takes precedence over the generic domain guidance above): ${r.principle}`);
   if (r.domain.length) {
-    // 只说"领域是 Wayland"没有约束力，必须说清楚拿它干什么：
-    // 领域义永远压过日常义，这是 stuttering→口吃 那类错误的根治办法
+    // 领域是候选义项的线索，不能替每一次出现决定词义。
     parts.push(
-      `Domain: ${r.domain.join(', ')}. Within this domain, always take the domain-specific sense of a word over its everyday sense, even when the everyday sense reads more naturally.`
+      `Domain: ${r.domain.join(', ')}. This is a context hint, not a sense constraint. The source sentence and neighboring context determine the meaning of each occurrence. Ignore a domain interpretation that does not fit locally; an everyday sense may be appropriate even on a technical page.`
     );
   }
 
@@ -137,17 +143,16 @@ function renderProfile(profile, { includeTermMappings = true } = {}) {
   }
   const pref = includeTermMappings ? Object.entries(r.preferred) : [];
   if (pref.length) {
-    parts.push('PREFERRED TERMS (use unless local context clearly demands otherwise):\n' +
+    parts.push('PREFERRED TERMS (reuse only for the same sense and role; local context may require another rendering):\n' +
       pref.map(([k, v]) => `- ${k} = ${v}`).join('\n'));
   }
   const risky = Object.entries(r.risky);
   if (risky.length) {
-    // 给义项，不给译法。给固定译法会在义项判断错时把错误钉死；
-    // 什么都不给模型又会滑回词典默认义。义项说明是两者之间唯一站得住的位置。
+    // 提供可推翻的候选义项；英文释义本身不构成保留源文的指令。
     parts.push(
-      'CONTEXT-SENSITIVE WORDS — the SENSE is fixed by the domain, the WORDING is yours to choose per sentence. The source-language descriptions below are sense notes, never instructions to preserve the source spelling; translate the word unless another rule explicitly says not to. Never fall back to the everyday dictionary sense:\n' +
+      'CONTEXT-SENSITIVE WORDS — possible senses, not fixed meanings or required wordings. Check each occurrence against its source sentence and neighboring context; ignore or revise a note when the local evidence calls for another sense. A note may fit some occurrences and not others. Source-language notes are never instructions to preserve the source spelling; translate unless another rule explicitly says not to:\n' +
         risky
-          .map(([w, sense]) => (sense ? `- ${w} → here means: ${sense}` : `- ${w} → ambiguous here; decide from the surrounding sentence`))
+          .map(([w, sense]) => (sense ? `- ${w} → candidate sense: ${sense}` : `- ${w} → ambiguous here; decide from the surrounding sentence`))
           .join('\n')
     );
   }
@@ -167,7 +172,7 @@ Rules:
 - Extract ONLY what the notes actually state or directly imply. Never invent terms the reader did not mention.
 - "principle": only if the reader stated how the page should be translated (tone, register, what to keep verbatim). Never a description of the content, never a term mapping.
 - "hard": the reader insists on this exact rendering. "preferred": a leaning, not an order.
-- "risky": words the reader flags as ambiguous. Record which sense applies, in the source language. Never put a translation here.
+- "risky": words the reader flags as ambiguous. Record the suggested sense and any stated scope, in the source language. These notes remain subject to local context. Never put a translation here.
 - "keep": categories or literals to leave in the source language.
 - If the notes are pure background with no term rules, return the domain and leave the rest empty.
 - Keys and values stay in their original language; do not translate the source terms themselves.`;
@@ -214,14 +219,17 @@ export function buildPreflightMessages({ digest, context = {}, targetLang }) {
 优先:
   <source term>: <${targetLang} translation>
 风险词:
-  <ambiguous word>: <which sense applies HERE, described in the SOURCE language>
+  <ambiguous word>: <possible sense supported by the digest, described in the SOURCE language>
 
 Rules:
 - Use only the three Chinese section keys shown above. Everything else is your content.
 - Omit a whole section if it has nothing. Never emit placeholder text or empty values.
+- Keys under 优先 and 风险词 must be verbatim source spans from the digest. Keep inflections and wording; do not turn "encodes and decodes" into "encoding/decoding" or combine separate occurrences into a synthetic key. An exact span locates evidence; it does not lock that span's meaning in other sentences.
 - 领域: be specific. "Wayland compositors on Linux" beats "technology". Always output this line.
-- 优先: recurring terminology, UI labels, or feature names that need one stable ${targetLang} rendering so the reader can match repeated references (max 20). This is a suggestion list, not an enforced glossary; local context may override it.
-- 风险词: ordinary words where the translator needs the correct sense but does NOT need one fixed rendering (max 8). State only the sense in the SOURCE language, e.g. "stuttering: frame pacing / dropped frames on screen, not speech". NEVER put a ${targetLang} translation here. This note is never a reason to leave the word untranslated.
+- The source sentence and neighboring context determine each occurrence's meaning. This page profile supplies fallible hints, not decisions for every occurrence of a word.
+- 优先: recurring terminology, UI labels, or feature names that need a stable ${targetLang} rendering for the same sense and role (max 32). This is a suggestion list, not an enforced glossary; local context may override it.
+- For branded UI labels and feature names, suggest only an established target-language product label you are confident about. Never invent an official-sounding label from a literal translation; omit it when uncertain.
+- 风险词: ordinary words that may need disambiguation but do NOT need one fixed rendering (max 8). Suggest a possible sense supported by the digest in the SOURCE language, with its scope when useful, e.g. "stuttering: in the rendering passage, may refer to uneven frame pacing". Do not invent evidence or exclude other senses across the entire page. Omit unsupported guesses. NEVER put a ${targetLang} translation here. This note is never a reason to leave the word untranslated.
 - The two sections must not overlap. If a recurring UI label or feature needs a stable rendering, put it in 优先. If wording may vary by sentence and only the sense needs disambiguation, put it in 风险词.
 - Do not infer either category from capitalization, casing, typography, or title position. Decide from the term's role in this document.
 - Never emit 原则, 锁定, or 不翻. Automatic preflight has no hard-rule authority.
@@ -297,10 +305,22 @@ export function extractJsonObject(raw) {
  * 把模型输出对齐回请求的 id。
  * 返回 { map: Map<id, text>, missing: id[] }
  */
+function cleanAlignment(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const clean = {};
+  for (const [source, rendered] of Object.entries(value)) {
+    if (typeof rendered !== 'string' || !source.trim() || !rendered.trim()) continue;
+    clean[source.trim()] = rendered.trim();
+  }
+  return clean;
+}
+
 export function parseTranslationResponse(raw, requestedIds) {
   const obj = extractJsonObject(raw);
   const map = new Map();
   const alignments = new Map();
+  const requested = new Set(requestedIds);
+  const duplicates = new Set();
 
   if (obj && Array.isArray(obj.items)) {
     for (const entry of obj.items) {
@@ -308,17 +328,15 @@ export function parseTranslationResponse(raw, requestedIds) {
       const id = Number(entry.i ?? entry.id);
       const text = entry.t ?? entry.text ?? entry.translation;
       if (!Number.isFinite(id) || typeof text !== 'string') continue;
+      if (!requested.has(id)) continue;
+      if (map.has(id)) duplicates.add(id);
       map.set(id, text);
-      if (entry.a && typeof entry.a === 'object' && !Array.isArray(entry.a)) {
-        const clean = {};
-        for (const [source, rendered] of Object.entries(entry.a)) {
-          if (typeof rendered !== 'string' || !source.trim() || !rendered.trim()) continue;
-          clean[source.trim()] = rendered.trim();
-        }
-        if (Object.keys(clean).length) alignments.set(id, clean);
-      }
+      const clean = cleanAlignment(entry.a);
+      if (Object.keys(clean).length) alignments.set(id, clean);
     }
   }
+
+  for (const id of duplicates) { map.delete(id); alignments.delete(id); }
 
   const missing = requestedIds.filter((id) => !map.has(id) || !map.get(id).trim());
   return { map, alignments, missing, parsed: Boolean(obj) };

@@ -1,12 +1,19 @@
-import { DEFAULT_SETTINGS, LIMITS, PROMPT_VERSION } from './constants.js';
+import { DEFAULT_SETTINGS, LIMITS, MSG, PROMPT_VERSION } from './constants.js';
 import { hashString } from './hash.js';
 import { providerDescriptor } from './provider-catalog.js';
+import { browserUserLanguage } from './languages.js';
 
 const KEY = 'settings';
 
 export async function getSettings() {
   const stored = await chrome.storage.local.get(KEY);
-  return migrate({ ...DEFAULT_SETTINGS, ...(stored[KEY] || {}) });
+  return migrate(withUserLanguage(stored[KEY]));
+}
+
+function withUserLanguage(stored = {}) {
+  const initial = { ...DEFAULT_SETTINGS, ...stored };
+  if (!Object.prototype.hasOwnProperty.call(stored, 'targetLang')) initial.targetLang = browserUserLanguage();
+  return initial;
 }
 
 /**
@@ -132,12 +139,7 @@ function migrate(s) {
 
 /** 迁移结果要落盘，否则每次读取都重跑，用户手动关掉的开关会被反复打开 */
 export async function getSettingsAndPersistMigration() {
-  const stored = await chrome.storage.local.get(KEY);
-  const raw = { ...DEFAULT_SETTINGS, ...(stored[KEY] || {}) };
-  const before = Number(raw.schemaVersion) || 0;
-  const next = migrate(raw);
-  if (before < SCHEMA_VERSION) await chrome.storage.local.set({ [KEY]: next });
-  return next;
+  return persistSettingsPatch(null);
 }
 
 /**
@@ -151,9 +153,28 @@ export function switchAccount(settings, nextId, current) {
 }
 
 export async function patchSettings(patch) {
-  const next = { ...(await getSettings()), ...patch };
-  await chrome.storage.local.set({ [KEY]: next });
-  return next;
+  const response = await chrome.runtime.sendMessage({ type: MSG.SAVE_SETTINGS, payload: { patch } });
+  if (!response?.ok) throw new Error(response?.error?.message || '保存设置失败');
+  return response.settings;
+}
+
+// Only the background invokes this writer. Popup writes travel through SAVE_SETTINGS.
+let settingsWrites = Promise.resolve();
+export function persistSettingsPatch(patch) {
+  const operation = settingsWrites.then(async () => {
+    const stored = await chrome.storage.local.get(KEY);
+    const raw = withUserLanguage(stored[KEY]);
+    const needsMigration = Number(raw.schemaVersion || 0) < SCHEMA_VERSION;
+    const next = { ...migrate(raw), ...patch };
+    // Account patches contain only edited providers, never a stale full snapshot.
+    if (patch?.accounts) next.accounts = { ...raw.accounts, ...patch.accounts };
+    if (patch === null && !needsMigration) return next;
+    next.configVersion = (Number(raw.configVersion) || 0) + 1;
+    await chrome.storage.local.set({ [KEY]: next });
+    return next;
+  });
+  settingsWrites = operation.catch(() => {});
+  return operation;
 }
 
 export function onSettingsChanged(cb) {
@@ -193,6 +214,8 @@ const EXPOSED_KEYS = Object.freeze([
   'background',
   'rulesText',
   'maxCharsPerChunk',
+  'concurrency',
+  'useCache',
   'wholePageTranslation',
   'minTextLength',
   'smartFilter',
@@ -294,6 +317,7 @@ export function toRuntimeConfig(settings = {}) {
     config.semanticPrecedent = false;
   }
   config.semanticRevision = semanticRevision(settings);
+  config.configVersion = Number(settings.configVersion) || 0;
   return config;
 }
 
@@ -323,12 +347,10 @@ export function classifyRuntimeConfigChange(previous = {}, next = {}) {
   }
 
   for (const key of new Set([...Object.keys(previous || {}), ...Object.keys(next || {})])) {
-    if (key === 'semanticRevision' || same(previous?.[key], next?.[key])) continue;
-    if (EXTRACTION.has(key)) out.extraction.push(key);
-    else if (SCHEDULING.has(key)) out.scheduling.push(key);
-    else if (OBSERVATION.has(key)) out.observation.push(key);
-    else if (PRESENTATION.has(key)) out.presentation.push(key);
-    else out.other.push(key);
+    if (key === 'semanticRevision' || key === 'configVersion' || same(previous?.[key], next?.[key])) continue;
+    const groups = { extraction: EXTRACTION, scheduling: SCHEDULING, observation: OBSERVATION, presentation: PRESENTATION };
+    const group = Object.keys(groups).find(name => groups[name].has(key)) || 'other';
+    out[group].push(key);
   }
   return out;
 }

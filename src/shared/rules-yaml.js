@@ -146,73 +146,62 @@ export function toYaml(raw) {
   return lines.join('\n');
 }
 
-/** 容忍模型直接吐 JSON，也容忍用户手改出来的松散缩进 */
+/** The parser owns only the active section; row parsing and section writes are pure. */
+function ruleRow(raw) {
+  const line = raw.replace(/\t/g, '  ').trimEnd();
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+  const match = trimmed.match(/^"((?:[^"\\]|\\.)*)"\s*[:：]\s*(.*)$/)
+    || trimmed.match(/^["'\x60]?([^:：]+?)["'\x60]?\s*[:：]\s*(.*)$/);
+  if (!match) return { item: trimmed.replace(/^[-*]\s*/, '') };
+  const key = match[1].trim().replace(/\\"/g, '"');
+  const value = match[2].trim().replace(/^"((?:[^"\\]|\\.)*)"$/, '$1').replace(/\\"/g, '"').replace(/^['\x60]|['\x60]$/g, '');
+  const alias = Object.hasOwn(KEY_ALIASES, key) ? key : key.toLowerCase();
+  return { key, value, section: !/^\s/.test(line) && Object.hasOwn(KEY_ALIASES, alias) ? KEY_ALIASES[alias] : null };
+}
+
+function appendList(out, section, value) {
+  if (!value) return;
+  if (section === 'principle') out.principle = [out.principle, value].filter(Boolean).join(' ');
+  else if (section === 'risky') out.risky[value] = '';
+  else if (['domain', 'keep'].includes(section)) out[section].push(value);
+}
+
+function inlineSection(out, section, value) {
+  if (['hard', 'preferred'].includes(section)) {
+    for (const pair of value.split(/[,，]/)) {
+      const parts = pair.split(/[=＝]/).map(part => part.trim());
+      if (parts.length === 2 && parts.every(Boolean)) out[section][parts[0]] = parts[1];
+    }
+  } else if (section === 'principle') out.principle = value;
+  else for (const word of cleanList(value)) appendList(out, section, word);
+}
+
+function writeRule(out, section, { key, value }) {
+  if (['hard', 'preferred'].includes(section)) {
+    if (key && value) out[section][key] = value;
+  } else if (section === 'risky') {
+    if (key) out.risky[key] = value === '（此处义项待补）' ? '' : value;
+  } else for (const word of cleanList(key + ' ' + value)) appendList(out, section, word);
+}
+
+/** 容忍模型直接吐 JSON，也容忍用户手改出来的松散缩进。 */
 export function fromYaml(text) {
   const src = String(text || '').trim();
-  if (!src) return { ...EMPTY_RULES };
-
   if (src.startsWith('{')) {
-    try {
-      return normalizeRules(JSON.parse(src));
-    } catch {
-      /* 落到逐行解析 */
-    }
+    try { return normalizeRules(JSON.parse(src)); }
+    catch { /* Fall through to the supported line grammar. */ }
   }
-
-  const out = { principle: '', domain: [], hard: {}, preferred: {}, risky: {}, keep: [] };
+  const out = normalizeRules({});
   let section = null;
-
-  for (const rawLine of src.split('\n')) {
-    const line = rawLine.replace(/\t/g, '  ').replace(/\s+$/, '');
-    if (!line.trim() || line.trim().startsWith('#')) continue;
-
-    const indented = /^\s{1,}/.test(line);
-    // 引号包裹的 key 整段取出，避免 std::vector 这类在第一个冒号处被切碎
-    const m =
-      line.trim().match(/^"((?:[^"\\]|\\.)*)"\s*[:：]\s*(.*)$/) ||
-      line.trim().match(/^["'`]?([^:：]+?)["'`]?\s*[:：]\s*(.*)$/);
-    if (!m) {
-      // 「- 某项」这样的列表写法
-      const item = line.trim().replace(/^[-*]\s*/, '');
-      if (!item) continue;
-      if (section === 'risky') out.risky[item] = '';
-      else if (section === 'domain' || section === 'keep') out[section].push(item);
-      continue;
-    }
-
-    const key = m[1].trim().replace(/\\"/g, '"');
-    const value = m[2].trim().replace(/^"((?:[^"\\]|\\.)*)"$/, '$1').replace(/\\"/g, '"').replace(/^['`]|['`]$/g, '');
-    const mapped = KEY_ALIASES[key] || KEY_ALIASES[key.toLowerCase()];
-
-    if (mapped && !indented) {
-      section = mapped;
-      if (value) {
-        if (mapped === 'hard' || mapped === 'preferred') {
-          // 「锁定: a=b, c=d」这种一行写法
-          for (const pair of value.split(/[,，]/)) {
-            const kv = pair.split(/[=＝]/);
-            if (kv.length === 2 && kv[0].trim() && kv[1].trim()) out[mapped][kv[0].trim()] = kv[1].trim();
-          }
-        } else if (mapped === 'principle') {
-          out.principle = value;
-          section = null;
-        } else if (mapped === 'risky') {
-          for (const w of cleanList(value)) out.risky[w] = '';
-        } else {
-          out[mapped].push(...cleanList(value));
-        }
-        section = null;
-      }
-      continue;
-    }
-
-    if (section === 'hard' || section === 'preferred') {
-      if (key && value) out[section][key] = value;
-    } else if (section === 'risky') {
-      if (key) out.risky[key] = value === '（此处义项待补）' ? '' : value;
-    } else if (section) {
-      out[section].push(...cleanList(`${key} ${value}`.trim()));
-    }
+  for (const raw of src.split('\n')) {
+    const row = ruleRow(raw);
+    if (!row) continue;
+    if (row.section) {
+      section = row.section;
+      if (row.value) { inlineSection(out, section, row.value); section = null; }
+    } else if (row.item !== undefined) appendList(out, section, row.item);
+    else if (section) writeRule(out, section, row);
   }
   return normalizeRules(out);
 }

@@ -1,12 +1,18 @@
 /** 纯逻辑核心回归：不依赖 DOM/jsdom，CI 最先跑。 */
 import assert from 'node:assert';
 import { createPageSession } from '../src/content/session.js';
-import { createTranslationScheduler, decideTranslationMode } from '../src/content/translation-scheduler.js';
+import {
+  createTranslationScheduler,
+  decideTranslationMode,
+  estimateWholePageTokens
+} from '../src/content/translation-scheduler.js';
 import { resolvePageContext } from '../src/content/page-context.js';
-import { buildPlainDigest } from '../src/content/digest.js';
+import { buildPlainDigest, buildBilingualMarkdown } from '../src/content/digest.js';
 import { buildMessages, buildPreflightMessages, promptFingerprint } from '../src/prompt/build.js';
 import { PROVIDER_PRESETS } from '../src/shared/provider-catalog.js';
-import { softenAutoRules } from '../src/shared/rules-yaml.js';
+import { softenAutoRules, fromYaml, toYaml, normalizeRules } from '../src/shared/rules-yaml.js';
+import { normalizeBatchOutcome } from '../src/shared/batch-outcome.js';
+import { consistencyView, contextPeek, preflightInfo } from '../src/popup/view-model.js';
 import {
   classifyRuntimeConfigChange,
   semanticRevision,
@@ -28,18 +34,34 @@ let failed = 0;
 const cases = [];
 const test = (name, fn) => cases.push([name, fn]);
 
+test('双语 Markdown 的标题层级与列表段落边界独立保留', () => {
+  const unit = (tag, text, translated) => ({
+    tag, text, state: 'done', role: tag.startsWith('H') ? 'heading' : 'body',
+    mode: tag === 'LI' ? 'append' : 'after', node: { isConnected: true, textContent: translated }
+  });
+  const markdown = buildBilingualMarkdown([
+    unit('H4', 'Protocol details', '协议细节'),
+    unit('P', 'A compositor implements the protocol.', '合成器实现协议。'),
+    unit('LI', 'Wayland repositories', 'Wayland 仓库'),
+    { ...unit('P', 'Unfinished', ''), state: 'pending' }
+  ]);
+  assert.equal(markdown, '#### Protocol details\n\n**协议细节**\n\nA compositor implements the protocol.\n\n合成器实现协议。\n\n- Wayland repositories\n\n  Wayland 仓库\n');
+});
+
 test('runtime contract：私有模型设置只通过 opaque semanticRevision 下发', () => {
   const base = {
     providerId: 'openai', apiBase: 'https://api.openai.com/v1', model: 'gpt-a', customPrompt: '',
     targetLang: '简体中文', presetId: 'auto', background: '', rulesText: '',
     autoPreflight: true, siteRules: [], smartFilter: true, maxCharsPerChunk: 2800,
-    translationStyle: 'bar'
+    translationStyle: 'bar', useCache: true, concurrency: 4
   };
   const runtime = toRuntimeConfig(base);
   assert.ok(runtime.semanticRevision);
   assert.equal('model' in runtime, false, 'model 不该暴露给 content');
   assert.equal('apiBase' in runtime, false, 'endpoint 不该暴露给 content');
   assert.equal('customPrompt' in runtime, false, 'custom prompt 不该暴露给 content');
+  assert.equal(runtime.useCache, true, '诊断需要拿到真实缓存开关，不能把缺失值误报成 false');
+  assert.equal(runtime.concurrency, 4, '诊断需要拿到实际并发配置');
 
   const changed = toRuntimeConfig({ ...base, model: 'gpt-b' });
   assert.notEqual(runtime.semanticRevision, changed.semanticRevision, '换模型却没有改变语义版本');
@@ -302,18 +324,43 @@ test('Scheduler：安全范围内整页优先绕过分块与视口优先，只�
   scheduler.stop();
 });
 
-test('Scheduler：整页触发器按字符数、条数与手动开关确定性降级', () => {
+test('Scheduler：LLM 按 token 预算决策，unit 只保留结构硬上限', () => {
   const small = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, text: 'a'.repeat(100) }));
-  assert.deepEqual(
-    decideTranslationMode(small),
-    {
-      translationMode: 'whole-page', modeReason: 'within-safe-range', sourceChars: 2000,
-      unitCount: 20, maxSourceChars: 12000, maxItems: 80
-    }
-  );
-  assert.equal(decideTranslationMode([{ text: 'a'.repeat(12001) }]).modeReason, 'source-char-limit');
-  assert.equal(decideTranslationMode(Array.from({ length: 81 }, () => ({ text: 'a' }))).modeReason, 'unit-count-limit');
+  const plan = decideTranslationMode(small);
+  assert.equal(plan.translationMode, 'whole-page');
+  assert.equal(plan.modeReason, 'within-safe-range');
+  assert.equal(plan.budgetMode, 'estimated-tokens');
+  assert.equal(plan.sourceChars, 2000);
+  assert.equal(plan.unitCount, 20);
+  assert.equal(plan.estimatedInputTokens, 3800);
+  assert.equal(plan.estimatedOutputTokens, 840);
+  assert.equal(plan.maxItems, 160);
+  assert.equal(decideTranslationMode([{ text: 'a'.repeat(12001) }]).translationMode, 'whole-page');
+  assert.equal(decideTranslationMode([{ text: 'a'.repeat(17000) }]).modeReason, 'estimated-output-token-limit');
+  assert.equal(decideTranslationMode(Array.from({ length: 161 }, () => ({ text: 'a' }))).modeReason, 'unit-hard-limit');
   assert.equal(decideTranslationMode(small, { preferWholePage: false }).modeReason, 'user-disabled');
+});
+
+test('Scheduler：实测点 token 估算不重复计算 JSON 开销；MT 继续走字符预算', () => {
+  const measured = Array.from({ length: 72 }, (_, i) => ({ text: 'a'.repeat(i === 71 ? 90 : 97) }));
+  const estimate = estimateWholePageTokens(measured);
+  assert.equal(estimate.sourceChars, 6977);
+  assert.ok(Math.abs(estimate.estimatedInputTokens - 5773) / 5773 < 0.03, JSON.stringify(estimate));
+  assert.ok(Math.abs(estimate.estimatedOutputTokens - 2855) / 2855 < 0.04, JSON.stringify(estimate));
+
+  const mtLong = decideTranslationMode([{ text: 'a'.repeat(4501) }], {
+    useTokenEstimate: false,
+    maxSourceChars: 4500,
+    maxItems: 60
+  });
+  assert.equal(mtLong.budgetMode, 'source-chars');
+  assert.equal(mtLong.modeReason, 'source-char-limit');
+  const mtMany = decideTranslationMode(Array.from({ length: 61 }, () => ({ text: 'a' })), {
+    useTokenEstimate: false,
+    maxSourceChars: 4500,
+    maxItems: 60
+  });
+  assert.equal(mtMany.modeReason, 'unit-hard-limit');
 });
 
 test('semanticRevision 对对象键序稳定', () => {
@@ -335,6 +382,7 @@ test('Prompt 输入使用 YAML，而翻译输出合同仍明确要求 JSON', () 
   assert.equal(built.user.trim().startsWith('{'), false);
   assert.ok(built.system.includes('Reply with ONE JSON object'), '响应合同不该跟着改成 YAML');
   assert.ok(built.system.includes('exact_local_trigger'));
+  assert.ok(built.system.includes('established target-language UI and feature names'));
 
   const preflight = buildPreflightMessages({ digest: 'Battery help', context: { title: 'Battery' }, targetLang: '简体中文' });
   assert.ok(preflight.user.startsWith('page:\n'));
@@ -424,6 +472,70 @@ test('自动预检术语建议与用户 preferred/hard 分权，并进入 cache 
     promptFingerprint({ ...base, preflightSuggestions: { Martian: '火星人' } }),
     '预检建议改变实际 prompt，必须改变缓存身份'
   );
+});
+
+test('预检与技术预设都允许局部语境推翻候选义项，用户锁定仍独立生效', () => {
+  const preflight = buildPreflightMessages({
+    digest: 'The compositor shows stuttering frames. A speaker discusses stuttering in speech.',
+    targetLang: '简体中文'
+  });
+  assert.ok(preflight.system.includes('fallible hints, not decisions for every occurrence'));
+  assert.ok(preflight.system.includes('Do not invent evidence or exclude other senses across the entire page'));
+  const message = buildMessages({
+    items: [{ i: 1, text: 'The compositor shows stuttering frames.' },
+      { i: 2, text: 'The speaker discusses stuttering in speech.' }],
+    presetId: 'technical', targetLang: '简体中文', wholePage: true,
+    profile: { domain: ['Wayland'], risky: { stuttering: 'uneven frame pacing' }, hard: { Wayland: 'Wayland' } },
+    trackedTerms: ['stuttering'], preflightSuggestions: { compositor: '合成器' }
+  });
+  assert.ok(message.system.includes('candidate sense: uneven frame pacing'));
+  assert.ok(message.system.includes('different renderings of the same word'));
+  assert.ok(message.system.includes('same sense and grammatical role'));
+  assert.ok(message.system.includes('LOCKED TERMS (never deviate'));
+  assert.ok(message.system.includes('metadata is observational only'));
+  assert.ok(!/SENSE is fixed|never alternate between two renderings|always take the domain-specific/.test(message.system));
+});
+
+test('规则区段支持带冒号术语、行内映射、列表与多行原则', () => {
+  const fixtures = [
+    ['锁定:\n  "std::vector": "向量:容器"', { hard: { 'std::vector': '向量:容器' } }],
+    ['优先: alpha=甲, beta=乙\n不翻: Wi-Fi, iPhone', { preferred: { alpha: '甲', beta: '乙' }, keep: ['Wi-Fi', 'iPhone'] }],
+    ['原则:\n  保持语气\n  避免: 添加解释\n领域:\n- 电池\n- 软件', { principle: '保持语气 避免 添加解释', domain: ['电池', '软件'] }],
+    ['风险词:\n  power: energy\n  idle: （此处义项待补）', { risky: { power: 'energy', idle: '' } }],
+    ['constructor: ignored\n领域: 软件', { domain: ['软件'] }]
+  ];
+  for (const [source, expected] of fixtures) {
+    const rules = normalizeRules(expected);
+    assert.deepEqual(fromYaml(source), rules);
+    assert.deepEqual(fromYaml(toYaml(rules)), rules);
+  }
+});
+
+test('空规则解析不共享可变集合', () => {
+  const first = fromYaml('');
+  first.domain.push('污染');
+  first.hard.word = '污染';
+  assert.deepEqual(fromYaml(''), normalizeRules({}));
+});
+
+test('损坏结果不会越过消息合同或让统计成为 Infinity', () => {
+  const result = normalizeBatchOutcome({ ok: true, items: [null, { i: 1, t: 'One' }, { i: 1, t: 'Duplicate' }, { i: 2, t: '' }, { i: 9, t: 'Unrequested' }], failed: {}, runtime: { translateRequestCount: Infinity } }, [1, 2]);
+  assert.deepEqual(result.items, []);
+  assert.deepEqual(result.failed, [1, 2]);
+  assert.equal(result.runtime.translateRequestCount, 0);
+});
+
+test('面板投影兼容新旧对齐指标，保留缓存排除提示和漂移证据', () => {
+  const data = { summary: { termsObserved: 2, semanticExpectedOccurrences: 4, semanticAlignmentRate: .75, cachedUnitsExcludedFromObservation: 3 }, rows: [{ source: 'power', taxonomy: 'UNKNOWN', variants: [{ target: '电量' }, { target: '电源' }] }] };
+  const view = consistencyView(data, true);
+  assert.match(view.text, /对齐 75%/);
+  assert.match(view.text, /3 个缓存单元未计入观测/);
+  assert.match(view.text, /电量 \/ 电源/);
+  assert.equal(view.copy, true);
+  assert.equal(consistencyView(data, false).copy, false);
+  assert.match(consistencyView({ summary: { expectedOccurrences: 2, coverage: .5 } }, true).text, /对齐 50%/);
+  assert.equal(contextPeek({ profileYaml: '领域: 电池' }, 'general'), '电池');
+  assert.match(preflightInfo({}, ''), /当前没有额外建议/);
 });
 
 for (const [name, fn] of cases) {

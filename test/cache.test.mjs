@@ -30,11 +30,20 @@ global.chrome = {
 
 const { cacheKey, getCached, putCached, initCache, clearCache, flush } = await import('../src/background/cache.js');
 const {
+  abortSession,
   createTranslationCachePolicy,
   canUsePerItemCache,
+  isUsableTranslation,
   wholePageCacheItems,
-  lookupWholePageCache
+  lookupWholePageCache,
+  translateChunk: translateRegisteredChunk,
+  openSession
 } = await import('../src/background/translator.js');
+
+const translateChunk = (args) => {
+  openSession(args.sessionId);
+  return translateRegisteredChunk(args);
+};
 
 let failed = 0;
 const cases = [];
@@ -134,6 +143,108 @@ test('整页缓存只接受 100% 命中，部分命中不会挖空下一次全�
     { i: 1, t: '甲。', cached: true },
     { i: 2, t: '乙。', cached: true }
   ]);
+});
+
+test('短条目返回空串或 Markdown 横线时视为漏项，并自动做单条恢复', async () => {
+  assert.equal(isUsableTranslation('轻点“自动 5G”。', '-', 'English'), false);
+  assert.equal(isUsableTranslation('轻点“自动 5G”。', 'Tap Automatic 5G.', 'English'), true);
+  assert.equal(isUsableTranslation('iPhone 15 Pro', 'iPhone 15 Pro', 'English'), true);
+  assert.equal(isUsableTranslation('电池健康', '电池健康', 'English'), false);
+  assert.equal(isUsableTranslation('张伟', '张伟', 'English'), true, '短人名允许按品牌/专名规则保留原文');
+
+  const responses = [
+    { items: [{ i: 1, t: '-' }, { i: 2, t: 'Battery Health' }] },
+    { items: [{ i: 1, t: 'Tap Automatic 5G.' }] }
+  ];
+  let fetchCalls = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    const content = JSON.stringify(responses[fetchCalls++] || { items: [] });
+    return new globalThis.Response(JSON.stringify({
+      choices: [{ message: { content } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 }
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  const sessionId = 'test:english-short-items';
+  try {
+    const result = await translateChunk({
+      items: [
+        { i: 1, text: '轻点“自动 5G”。' },
+        { i: 2, text: '电池健康' }
+      ],
+      context: { presetId: 'general', wholePage: true },
+      settings: {
+        ...settings,
+        useCache: false,
+        targetLang: 'English',
+        presetId: 'general',
+        customPrompt: '',
+        background: '',
+        apiKey: 'test-key'
+      },
+      sessionId
+    });
+    assert.equal(fetchCalls, 2, '单独漏掉一条时没有发起恢复请求');
+    assert.deepEqual(result.failed, []);
+    assert.equal(result.items.find((item) => item.i === 1)?.t, 'Tap Automatic 5G.');
+    assert.equal(result.items.find((item) => item.i === 2)?.t, 'Battery Health');
+    assert.equal(result.runtime.splitRetryCount, 1);
+  } finally {
+    abortSession(sessionId);
+    global.fetch = originalFetch;
+  }
+});
+
+test('整批返回无效 JSON 时只拆分该批恢复，并保留真实请求与 token 计数', async () => {
+  const responses = [
+    'not json',
+    'still not json',
+    '```broken```',
+    JSON.stringify({ items: [{ i: 1, t: '第一段。' }] }),
+    JSON.stringify({ items: [{ i: 2, t: '第二段。' }] })
+  ];
+  let fetchCalls = 0;
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    const content = responses[fetchCalls++] || JSON.stringify({ items: [] });
+    return new globalThis.Response(JSON.stringify({
+      choices: [{ message: { content } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 }
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  const sessionId = 'test:invalid-json-split';
+  try {
+    const result = await translateChunk({
+      items: [
+        { i: 1, text: 'First paragraph.' },
+        { i: 2, text: 'Second paragraph.' }
+      ],
+      context: { presetId: 'general', wholePage: true },
+      settings: {
+        ...settings,
+        useCache: false,
+        targetLang: '简体中文',
+        presetId: 'general',
+        customPrompt: '',
+        background: '',
+        apiKey: 'test-key'
+      },
+      sessionId
+    });
+    assert.equal(fetchCalls, 5, '整批重试失败后没有改为两个小请求');
+    assert.deepEqual(result.failed, []);
+    assert.deepEqual(result.items.map((item) => item.i).sort(), [1, 2]);
+    assert.equal(result.runtime.translateRequestCount, 5);
+    assert.equal(result.runtime.splitRetryCount, 2);
+    assert.equal(result.runtime.invalidResponseSplitCount, 1);
+    assert.equal(result.runtime.invalidResponseFailedUnits, 0);
+    assert.deepEqual(result.usage, { input: 50, output: 25 });
+  } finally {
+    abortSession(sessionId);
+    global.fetch = originalFetch;
+  }
 });
 
 for (const [name, fn] of cases) {

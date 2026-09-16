@@ -1,5 +1,5 @@
 /**
- * 把当前 PageSession 的 units 拼成一份纯文本摘要，给翻译预检和导出用。
+ * 把当前 PageSession 的 units 拼成一份纯文本摘要，给翻译预检用。
  * 不碰 DOM、不含 HTML：只保留 # 层级和 - 列表两种标记 ——
  * 标题被当正文翻，多半就是因为层级信息在扁平文本里丢了。
  */
@@ -78,20 +78,5 @@ export function buildPlainDigest(units, { budget = 12000 } = {}) {
   return { text: out.join('\n'), chars, sampled: true, kept: out.length, total: lines.length };
 }
 
-/** 双语对照 Markdown 导出：仅含已完成的单元 */
-export function buildBilingualMarkdown(units) {
-  const out = [];
-  for (const unit of units) {
-    if (unit.state !== 'done' || !unit.node?.isConnected) continue;
-    const t = unit.node.textContent.trim();
-    if (unit.role === 'heading') {
-      const level = '#'.repeat(H_LEVEL[unit.tag] || 3);
-      out.push(`${level} ${unit.text}`, `**${t}**`, '');
-    } else if (unit.mode === 'append' && unit.tag === 'LI') {
-      out.push(`- ${unit.text}`, `  ${t}`, '');
-    } else {
-      out.push(unit.text, '', t, '');
-    }
-  }
-  return out.join('\n');
-}
+// Export formatting is independent from the prompt digest.
+export { buildBilingualMarkdown } from './markdown-export.js';

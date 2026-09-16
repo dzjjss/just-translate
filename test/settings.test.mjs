@@ -224,6 +224,20 @@ test('配置热更新按语义分类：页面只看 runtime contract', () => {
   assert.equal(classifyRuntimeConfigChange(base, { ...base }).semantic, false);
 });
 
+test('并发账户增量在后台串行合并，不删除其他服务商的新配置', async () => {
+  const { persistSettingsPatch } = await import('../src/shared/settings.js');
+  stored = { settings: { schemaVersion: 13, configVersion: 10, accounts: {
+    openai: { apiKey: 'old-openai' }, deepseek: { apiKey: 'old-deepseek' }
+  } } };
+  const first = persistSettingsPatch({ accounts: { openai: { apiKey: 'new-openai' } } });
+  const second = persistSettingsPatch({ accounts: { deepseek: { apiKey: 'new-deepseek' } } });
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.configVersion, 11);
+  assert.equal(b.configVersion, 12);
+  assert.equal(stored.settings.accounts.openai.apiKey, 'new-openai');
+  assert.equal(stored.settings.accounts.deepseek.apiKey, 'new-deepseek');
+});
+
 for (const [name, fn] of cases) {
   try {
     await fn();

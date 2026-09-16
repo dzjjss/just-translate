@@ -1,15 +1,6 @@
-/**
- * 正文根探测。
- *
- * 之前"正文优先"只是个名字：实际行为是一堆基于布局的启发式补丁，
- * 而那些补丁靠 nav/header/role=navigation 这类语义容器识别界面。
- * ArchWiki 的顶栏是 <div id="archnavbar"><ul id="archnavbarlist">，
- * 纯 div 加 ul，一条规则都不触发 —— 于是整页导航全被当正文翻了。
- *
- * 真正的正文优先应该先把范围收到正文根里，语义补丁只作为根内的二次过滤。
- */
+/** 内容与导航的结构线索。它们只参与候选判断，不能裁掉整棵可见子树。 */
 
-const ROOT_SELECTORS = [
+export const CONTENT_SELECTORS = [
   'main',
   '[role="main"]',
   '#mw-content-text .mw-parser-output', // MediaWiki 正文
@@ -21,9 +12,9 @@ const ROOT_SELECTORS = [
   '.article-content',
   '.post-content',
   '#readme'
-];
+].join(',');
 
-/** 根内仍要排除的附属区块：目录、侧栏、相关文章、编辑提示 */
+/** 可能是附属内容的容器；页面也可能误用这些标签与类名放置正文。 */
 export const ASIDE_SELECTORS = [
   'nav',
   'aside',
@@ -42,40 +33,6 @@ export const ASIDE_SELECTORS = [
 
 function textLength(el) {
   return (el.textContent || '').replace(/\s+/g, '').length;
-}
-
-/**
- * 选正文根：候选里文本量最大的那个，且要占全页可见文本的相当比例。
- * 占比太低说明选错了（比如选中一个只放摘要的 article），宁可退回 body。
- */
-export function findContentRoot(doc = document) {
-  const body = doc.body || doc.documentElement;
-  if (!body) return null;
-  const total = textLength(body);
-  if (!total) return body;
-
-  let best = null;
-  let bestLen = 0;
-  for (const sel of ROOT_SELECTORS) {
-    let nodes;
-    try {
-      nodes = doc.querySelectorAll(sel);
-    } catch {
-      continue;
-    }
-    for (const el of nodes) {
-      const len = textLength(el);
-      if (len > bestLen) {
-        best = el;
-        bestLen = len;
-      }
-    }
-    // 越靠前的选择器越可信，一旦拿到足够份量就不再往后找
-    if (best && bestLen / total >= 0.35) break;
-  }
-
-  if (!best || bestLen / total < 0.2) return body;
-  return best;
 }
 
 /**

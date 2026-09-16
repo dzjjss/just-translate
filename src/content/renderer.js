@@ -3,6 +3,10 @@
  * 这样即使提取器判断失误，页面也不会被破坏 —— 最坏情况只是多一行没用的译文。
  */
 
+import { queryPage } from './dom-roots.js';
+import { translateUi } from '../shared/ui-language.js';
+import { ensureShadowStyles, removeShadowStyles } from './shadow-styles.js';
+
 const CLASS = 'byom-t';
 
 export function isTranslationNode(node) {
@@ -85,6 +89,7 @@ export function attach(unit) {
   }
 
   unit.node = node;
+  void ensureShadowStyles(node);
   return node;
 }
 
@@ -103,19 +108,31 @@ export function fill(unit, text) {
   return true;
 }
 
-export function fail(unit, message) {
+export function fail(unit, message, language = '简体中文') {
   const node = unit.node;
   if (!node || !node.isConnected) return false;
   if (node.dataset.byomHash !== unit.hash) return false;
   node.dataset.byomState = 'error';
-  node.title = message || '翻译失败，双击重试';
-  node.textContent = '译文获取失败 · 双击重试';
+  node.title = translateUi(language, message || '翻译失败，双击重试');
+  node.textContent = translateUi(language, '译文获取失败 · 双击重试');
   return true;
 }
 
 export function detach(unit) {
   unit.node?.remove();
   unit.node = null;
+  if (unit.mode === 'append') delete unit.el.dataset.byomSrcIn;
+  else if (unit.anchor === unit.el) delete unit.el.dataset.byomSrc;
+}
+
+/** Synchronous layout reads must see source hidden by our own translation-only mode. */
+export function withSourceVisible(read) {
+  const root = document.documentElement;
+  const mode = root.dataset.byomDisplay;
+  if (mode !== 'translation') return read();
+  root.dataset.byomDisplay = 'bilingual';
+  try { return read(); }
+  finally { root.dataset.byomDisplay = mode; }
 }
 
 let colorMql = null;
@@ -149,7 +166,7 @@ export function applyPresentation(cfg) {
     if (mode === 'custom') {
       root.style.setProperty('--byom-text', dark ? cfg.textColorDark : cfg.textColorLight);
     } else if (mode === 'muted') {
-      root.style.setProperty('--byom-text', 'color-mix(in srgb, currentColor 72%, transparent)');
+      root.style.setProperty('--byom-text', 'color-mix(in srgb, currentColor 85%, transparent)');
     } else if (mode === 'accent') {
       root.style.setProperty('--byom-text', dark ? cfg.accentColorDark : cfg.accentColorLight);
     } else {
@@ -187,14 +204,20 @@ export function isVisible() {
 }
 
 export function removeAll() {
-  document.querySelectorAll('.' + CLASS).forEach((n) => n.remove());
-  document.querySelectorAll('[data-byom-src]').forEach((n) => delete n.dataset.byomSrc);
-  document.querySelectorAll('[data-byom-src-in]').forEach((n) => delete n.dataset.byomSrcIn);
+  for (const node of queryPage('.' + CLASS)) node.remove();
+  for (const node of queryPage('[data-byom-src]')) delete node.dataset.byomSrc;
+  for (const node of queryPage('[data-byom-src-in]')) delete node.dataset.byomSrcIn;
+  removeShadowStyles();
   // 显示方式是设置，不是这一页的临时状态。清除译文不该顺手把它重置掉 ——
   // 之前清一次就悄悄退回双语，看起来就像预设值失效了。
 }
 
-export function findUnitIdFromEvent(target) {
-  const node = target?.closest?.('.' + CLASS);
+export function clearDriftMarks() {
+  for (const node of queryPage('.byom-t[data-byom-drift]')) delete node.dataset.byomDrift;
+}
+
+export function findUnitIdFromEvent(eventOrTarget) {
+  const path = eventOrTarget?.composedPath?.() || [eventOrTarget];
+  const node = path.map(target => target?.closest?.('.' + CLASS)).find(Boolean);
   return node ? Number(node.dataset.byomId) : null;
 }

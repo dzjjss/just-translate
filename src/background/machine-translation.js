@@ -1,4 +1,6 @@
 import { hashString } from '../shared/hash.js';
+import { isUsableTranslation } from '../shared/translation-result.js';
+import { toPlainError } from '../shared/logger.js';
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -67,66 +69,51 @@ export function parseMachineBatch(output, items, nonce) {
  * 少一个标记就可能让前一段吞进后一段，部分结果也不能信。
  */
 export async function translateMachineWithRecovery({
-  items,
-  context = '',
-  request,
-  runtime = null,
-  depth = 0
+  items, context = '', request, runtime = null, targetLang = ''
 }) {
-  const list = Array.isArray(items) ? items : [];
-  if (!list.length) return { items: [], failed: [] };
-
-  if (list.length === 1 && (!context || depth > 0)) {
-    const translated = String(await request(list[0].text, depth)).trim();
-    return translated
-      ? { items: [{ i: list[0].i, t: translated, source: list[0].text }], failed: [] }
-      : { items: [], failed: [list[0].i] };
+  const source = Array.isArray(items) ? items : [];
+  const pending = source.length ? [{ items: source, depth: 0 }] : [];
+  const accepted = new Map();
+  let error = null;
+  while (pending.length) {
+    const batch = pending.pop();
+    try {
+      const result = await translateMachineBatch(batch, context, request, targetLang);
+      if (result) {
+        for (const item of result) accepted.set(item.i, item);
+      } else if (batch.items.length > 1) {
+        if (runtime) runtime.boundaryRecoveryCount++;
+        const mid = Math.ceil(batch.items.length / 2);
+        pending.push({ items: batch.items.slice(mid), depth: batch.depth + 1 });
+        pending.push({ items: batch.items.slice(0, mid), depth: batch.depth + 1 });
+      } else if (batch.depth === 0 && context) {
+        pending.push({ items: batch.items, depth: 1 });
+      }
+    } catch (failure) {
+      error = toPlainError(failure);
+      break;
+    }
   }
+  return { items: [...accepted.values()], failed: source.filter(item => !accepted.has(item.i)).map(item => item.i), error };
+}
 
-  const packed = packMachineBatch(list, { context });
+async function translateMachineBatch(batch, context, request, targetLang) {
+  const { items, depth } = batch;
+  if (items.length === 1 && (!context || depth > 0)) {
+    const text = String(await request(items[0].text, depth)).trim();
+    return isUsableTranslation(items[0].text, text, targetLang)
+      ? [{ i: items[0].i, t: text, source: items[0].text }] : null;
+  }
+  const packed = packMachineBatch(items, { context });
   let output;
   try {
     output = await request(packed.text, depth);
   } catch (error) {
-    const tooLarge = [400, 413, 414].includes(Number(error?.status));
-    if (!tooLarge) throw error;
-    if (runtime) runtime.boundaryRecoveryCount++;
-    if (list.length === 1) {
-      return translateMachineWithRecovery({ items: list, context: '', request, runtime, depth: depth + 1 });
-    }
-    const mid = Math.ceil(list.length / 2);
-    const out = [];
-    const failed = [];
-    for (const half of [list.slice(0, mid), list.slice(mid)]) {
-      const sub = await translateMachineWithRecovery({ items: half, context, request, runtime, depth: depth + 1 });
-      out.push(...sub.items);
-      failed.push(...sub.failed);
-    }
-    return { items: out, failed };
+    if ([413, 414].includes(Number(error.status))) return null;
+    throw error;
   }
-  const parsed = parseMachineBatch(output, list, packed.nonce);
-  const out = [];
-  for (const item of list) {
-    const translated = parsed.map.get(item.i);
-    if (translated) out.push({ i: item.i, t: translated, source: item.text });
-  }
-  if (!parsed.missing.length) return { items: out, failed: [] };
-
-  if (runtime) runtime.boundaryRecoveryCount++;
-  // 少一个标记就可能让前一段吞进后一段，不能保留所谓“部分成功”。
-  const missing = list;
-  out.length = 0;
-  if (missing.length === 1) {
-    const sub = await translateMachineWithRecovery({ items: missing, context: '', request, runtime, depth: depth + 1 });
-    return { items: [...out, ...sub.items], failed: sub.failed };
-  }
-
-  const mid = Math.ceil(missing.length / 2);
-  const failed = [];
-  for (const half of [missing.slice(0, mid), missing.slice(mid)]) {
-    const sub = await translateMachineWithRecovery({ items: half, context, request, runtime, depth: depth + 1 });
-    out.push(...sub.items);
-    failed.push(...sub.failed);
-  }
-  return { items: out, failed };
+  const parsed = parseMachineBatch(output, items, packed.nonce);
+  if (parsed.missing.length) return null;
+  if (items.some(item => !isUsableTranslation(item.text, parsed.map.get(item.i), targetLang))) return null;
+  return items.map(item => ({ i: item.i, t: parsed.map.get(item.i), source: item.text }));
 }

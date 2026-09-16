@@ -64,7 +64,7 @@ const ALIASES = new Map([
   ['indonesian', 'id']
 ]);
 
-function canonical(raw) {
+export function languageCode(raw) {
   const text = String(raw || '').trim();
   if (!text) return '';
   const alias = ALIASES.get(text.toLowerCase()) || ALIASES.get(text);
@@ -79,7 +79,7 @@ function canonical(raw) {
  * 映射失败时明确报错，不静默猜成中文或英文。
  */
 export function resolveMachineTarget(target, providerId) {
-  const code = canonical(target);
+  const code = languageCode(target);
   if (!code) {
     throw new Error(`免 Key 引擎不认识目标语言“${String(target || '').trim()}”，请填写常见语言名或 ISO 语言码`);
   }

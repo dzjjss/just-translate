@@ -11,6 +11,8 @@ export const MSG = Object.freeze({
   SYNC_ON_TAB: 'sync-on-tab',
   LIST_MODELS: 'list-models',
   GET_CONFIG: 'get-config',
+  SAVE_SETTINGS: 'save-settings',
+  OPEN_SESSION: 'open-session',
   SAVE_FAB_OFFSET: 'save-fab-offset',
   SAVE_DISPLAY_MODE: 'save-display-mode',
   LAB_TRANSLATE: 'lab-translate',
@@ -21,6 +23,8 @@ export const MSG = Object.freeze({
   TEST_CONNECTION: 'test-connection',
   CLEAR_CACHE: 'clear-cache',
   CACHE_STATS: 'cache-stats',
+  GET_LIFECYCLE_LOG: 'get-lifecycle-log',
+  CLEAR_LIFECYCLE_LOG: 'clear-lifecycle-log',
 
   // background -> content
   PING: 'ping',
@@ -43,6 +47,8 @@ export const MSG = Object.freeze({
   CLEAR_PAGE: 'clear-page',
   RESET_PROFILE: 'reset-profile',
   RESTART_PAGE: 'restart-page',
+  GET_DIAGNOSTICS: 'get-diagnostics',
+  CLEAR_DIAGNOSTICS: 'clear-diagnostics',
 
   // content -> popup（广播，无接收方时静默失败）
   TAB_STATE: 'tab-state'
@@ -59,7 +65,7 @@ export const PHASE = Object.freeze({
 });
 
 /** prompt 结构版本号：改动 prompt 语义时 +1，用于让旧缓存自然失效 */
-export const PROMPT_VERSION = 10;
+export const PROMPT_VERSION = 14;
 
 export const DEFAULT_SETTINGS = Object.freeze({
   // 由 settings.js 的迁移步骤维护，改默认值时必须同步加一步
@@ -149,10 +155,23 @@ export const LIMITS = Object.freeze({
   TEMPERATURE: 0.2,
   // 每批条数与每批字符是同一件事的两种度量，留字符预算一个就够
   MAX_ITEMS_PER_CHUNK: 20,
-  // 整页模式是质量优先的默认路径，但不同模型上下文与最大输出限制差异很大。
-  // 这里只用保守、可解释的源文规模门槛；任一项超限就自动退回分块。
+  // LLM 整页预算来自实测拆分：固定 prompt + 源文 token + 每 unit JSON 包装。
+  // 输出另留约 25% 的 8192 completion 余量；后续用 telemetry 继续校准。
+  WHOLE_PAGE_ESTIMATED_FIXED_INPUT_TOKENS: 3000,
+  WHOLE_PAGE_SOURCE_CHARS_PER_INPUT_TOKEN: 4,
+  WHOLE_PAGE_INPUT_TOKENS_PER_ITEM: 15,
+  WHOLE_PAGE_OUTPUT_TOKENS_PER_SOURCE_CHAR: 0.36,
+  WHOLE_PAGE_OUTPUT_TOKENS_PER_ITEM: 6,
+  WHOLE_PAGE_MAX_ESTIMATED_TOTAL_TOKENS: 16000,
+  WHOLE_PAGE_MAX_ESTIMATED_OUTPUT_TOKENS: 6000,
+  // unit 数仍保留为边界/ID 完整性的结构硬上限，不再充当主要 token 阈值。
+  WHOLE_PAGE_MAX_ITEMS: 160,
+  // 免 Key MT 没有统一 token 口径，继续使用服务端安全字符范围。
   WHOLE_PAGE_MAX_SOURCE_CHARS: 12000,
-  WHOLE_PAGE_MAX_ITEMS: 80,
+  // 对齐 metadata 与预检建议各有独立预算；观测池至少给 lexical 留 8 席。
+  MAX_TRACKED_TERMS: 32,
+  MIN_TRACKED_LEXICAL_TERMS: 8,
+  MAX_PREFLIGHT_SUGGESTIONS: 32,
   // 页面侧同时在途的批数。整页排在页内队列里逐批取，视口附近的先走；
   // 全局请求上限仍由后台 concurrency 设置兜底。
   MAX_CONCURRENT_CHUNKS: 3,
@@ -161,5 +180,9 @@ export const LIMITS = Object.freeze({
   CACHE_MAX_ENTRIES: 4000,
   CACHE_FLUSH_MS: 3000,
   MAX_RETRIES: 2,
+  BATCH_MAX_ATTEMPTS: 9,
+  BATCH_DEADLINE_MS: 120000,
+  MAX_REQUEST_SOURCE_CHARS: 12000,
+  MAX_COMPILED_REQUEST_CHARS: 48000,
   REQUEST_TIMEOUT_MS: 90000
 });

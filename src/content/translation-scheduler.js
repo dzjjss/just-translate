@@ -10,8 +10,11 @@ export function createTranslationScheduler({
   session,
   maxChars = 2800,
   wholePage = false,
+  wholePageUseTokenEstimate = true,
   wholePageMaxSourceChars = LIMITS.WHOLE_PAGE_MAX_SOURCE_CHARS,
   wholePageMaxItems = LIMITS.WHOLE_PAGE_MAX_ITEMS,
+  wholePageMaxEstimatedTotalTokens = LIMITS.WHOLE_PAGE_MAX_ESTIMATED_TOTAL_TOKENS,
+  wholePageMaxEstimatedOutputTokens = LIMITS.WHOLE_PAGE_MAX_ESTIMATED_OUTPUT_TOKENS,
   send,
   priority = null,
   onPhase = () => {},
@@ -25,12 +28,11 @@ export function createTranslationScheduler({
   let firstBatchDone = false;
   let drainPromise = null;
   let timer = null;
-  let active = true;
   let chunkChars = maxChars;
   const preferWholePage = Boolean(wholePage);
   let modePlan = null;
 
-  const alive = () => active && session.isActive();
+  const alive = () => session.isActive();
 
   /**
    * 从待翻队列取下一批。priority(unit) 为真的段（通常是"在视口附近"）
@@ -46,8 +48,11 @@ export function createTranslationScheduler({
     if (!modePlan) {
       modePlan = decideTranslationMode(pending, {
         preferWholePage,
+        useTokenEstimate: wholePageUseTokenEstimate,
         maxSourceChars: wholePageMaxSourceChars,
-        maxItems: wholePageMaxItems
+        maxItems: wholePageMaxItems,
+        maxEstimatedTotalTokens: wholePageMaxEstimatedTotalTokens,
+        maxEstimatedOutputTokens: wholePageMaxEstimatedOutputTokens
       });
     }
     if (modePlan.translationMode === 'whole-page' && !firstBatchDone) {
@@ -148,7 +153,7 @@ export function createTranslationScheduler({
   }
 
   function stop() {
-    active = false;
+    session.invalidate();
     pending = [];
     clearTimeout(timer);
     timer = null;
@@ -158,7 +163,9 @@ export function createTranslationScheduler({
     enqueue,
     flush,
     stop,
-    sendNow: runChunk,
+    async sendNow(chunk, options) {
+      if (await session.waitForGate()) await runChunk(chunk, options);
+    },
     setMaxChars(value) {
       const n = Number(value);
       if (Number.isFinite(n) && n > 0) chunkChars = n;
@@ -190,9 +197,40 @@ export function createTranslationScheduler({
       wholePage: modePlan.translationMode === 'whole-page' && !firstBatchDone,
       modeReason: modePlan.modeReason,
       sourceChars: modePlan.sourceChars,
-      unitCount: modePlan.unitCount
+      unitCount: modePlan.unitCount,
+      budgetMode: modePlan.budgetMode,
+      estimatedInputTokens: modePlan.estimatedInputTokens,
+      estimatedOutputTokens: modePlan.estimatedOutputTokens,
+      estimatedTotalTokens: modePlan.estimatedTotalTokens
     };
   }
+}
+
+/**
+ * 首个实测点（6977 source chars / 72 units）为 5773 input、2855 output tokens。
+ * 不能用 6977 / 5773 后再叠加 unit 开销，那会重复计算 JSON 与固定 prompt。
+ * 这里显式拆成固定、源文和 unit 三项；系数保守取整，后续由 telemetry 回归校准。
+ */
+export function estimateWholePageTokens(units) {
+  const list = Array.isArray(units) ? units : [];
+  const sourceChars = list.reduce((sum, unit) => sum + String(unit?.text || '').length, 0);
+  const unitCount = list.length;
+  const estimatedInputTokens = Math.ceil(
+    LIMITS.WHOLE_PAGE_ESTIMATED_FIXED_INPUT_TOKENS +
+    sourceChars / LIMITS.WHOLE_PAGE_SOURCE_CHARS_PER_INPUT_TOKEN +
+    unitCount * LIMITS.WHOLE_PAGE_INPUT_TOKENS_PER_ITEM
+  );
+  const estimatedOutputTokens = Math.ceil(
+    sourceChars * LIMITS.WHOLE_PAGE_OUTPUT_TOKENS_PER_SOURCE_CHAR +
+    unitCount * LIMITS.WHOLE_PAGE_OUTPUT_TOKENS_PER_ITEM
+  );
+  return {
+    sourceChars,
+    unitCount,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens
+  };
 }
 
 /** 纯函数：便于测试和遥测复核，不猜模型型号，也不做语义判断。 */
@@ -200,29 +238,52 @@ export function decideTranslationMode(
   units,
   {
     preferWholePage = true,
+    useTokenEstimate = true,
     maxSourceChars = LIMITS.WHOLE_PAGE_MAX_SOURCE_CHARS,
-    maxItems = LIMITS.WHOLE_PAGE_MAX_ITEMS
+    maxItems = LIMITS.WHOLE_PAGE_MAX_ITEMS,
+    maxEstimatedTotalTokens = LIMITS.WHOLE_PAGE_MAX_ESTIMATED_TOTAL_TOKENS,
+    maxEstimatedOutputTokens = LIMITS.WHOLE_PAGE_MAX_ESTIMATED_OUTPUT_TOKENS
   } = {}
 ) {
   const list = Array.isArray(units) ? units : [];
-  const sourceChars = list.reduce((sum, unit) => sum + String(unit?.text || '').length, 0);
-  const unitCount = list.length;
+  const estimates = estimateWholePageTokens(list);
+  const { sourceChars, unitCount, estimatedInputTokens, estimatedOutputTokens, estimatedTotalTokens } = estimates;
+  const budgetMode = useTokenEstimate ? 'estimated-tokens' : 'source-chars';
   let modeReason = 'within-safe-range';
   let translationMode = 'whole-page';
 
   if (!preferWholePage) {
     translationMode = 'chunked';
     modeReason = 'user-disabled';
-  } else if (sourceChars > maxSourceChars) {
+  } else if (!unitCount) {
+    translationMode = 'chunked';
+    modeReason = 'no-content';
+  } else if (useTokenEstimate && estimatedOutputTokens > maxEstimatedOutputTokens) {
+    translationMode = 'chunked';
+    modeReason = 'estimated-output-token-limit';
+  } else if (useTokenEstimate && estimatedTotalTokens > maxEstimatedTotalTokens) {
+    translationMode = 'chunked';
+    modeReason = 'estimated-total-token-limit';
+  } else if (!useTokenEstimate && sourceChars > maxSourceChars) {
     translationMode = 'chunked';
     modeReason = 'source-char-limit';
   } else if (unitCount > maxItems) {
     translationMode = 'chunked';
-    modeReason = 'unit-count-limit';
-  } else if (!unitCount) {
-    translationMode = 'chunked';
-    modeReason = 'no-content';
+    modeReason = 'unit-hard-limit';
   }
 
-  return { translationMode, modeReason, sourceChars, unitCount, maxSourceChars, maxItems };
+  return {
+    translationMode,
+    modeReason,
+    budgetMode,
+    sourceChars,
+    unitCount,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    estimatedTotalTokens,
+    maxEstimatedTotalTokens,
+    maxEstimatedOutputTokens,
+    maxSourceChars,
+    maxItems
+  };
 }

@@ -9,37 +9,99 @@ let sequence = 0;
 
 export function createPageSession() {
   const id = `${Date.now().toString(36)}-${(++sequence).toString(36)}`;
-  let active = true;
+  let lifecycle = 'idle';
+  const active = () => lifecycle !== 'closed';
   const units = new Map();
+  const owners = new WeakMap();
   let trail = [];
   let profile = null;
   let bypassCache = false;
-  const tokens = { input: 0, output: 0, cachedUnits: 0 };
+  const tokens = {
+    translation: { input: 0, output: 0, incomplete: false },
+    preflight: { input: 0, output: 0, incomplete: false },
+    cachedUnits: 0
+  };
+  const totalUsage = () => ({
+    input: tokens.translation.input + tokens.preflight.input,
+    output: tokens.translation.output + tokens.preflight.output,
+    incomplete: tokens.translation.incomplete || tokens.preflight.incomplete
+  });
   let errorStreak = { msg: '', count: 0 };
   let drift = [];
-  let total = 0;
-  let done = 0;
-  let failed = 0;
   let gate = null;
   let gateGeneration = 0;
   let preflightGeneration = 0;
 
   const session = {
     id,
-    units,
+    units: Object.freeze({
+      get: (key) => units.get(key),
+      values: () => units.values(),
+      get size() { return units.size; }
+    }),
 
-    isActive: () => active,
+    isActive: active,
+    isRunning: () => lifecycle === 'running',
+    start() { if (active()) lifecycle = 'running'; },
 
     invalidate() {
-      active = false;
+      lifecycle = 'closed';
       gateGeneration++;
       preflightGeneration++;
       gate = null;
     },
 
     registerUnit(unit) {
+      if (unit.node) {
+        const previous = owners.get(unit.node);
+        if (previous && previous !== unit.id) units.delete(previous);
+        owners.set(unit.node, unit.id);
+      }
+      unit.attempt = 0;
       units.set(unit.id, unit);
-      total++;
+    },
+
+    beginAttempt(batch) {
+      const attempts = new Map();
+      for (const unit of batch) {
+        if (units.get(unit.id) !== unit) continue;
+        unit.attempt++;
+        unit.state = 'pending';
+        attempts.set(unit.id, unit.attempt);
+      }
+      return attempts;
+    },
+
+    prepareRetry(unit) {
+      if (!active() || !['done', 'error'].includes(unit.state)) return false;
+      unit.attempt++;
+      unit.state = 'queued';
+      return true;
+    },
+
+    /** Retire units no longer represented by the current DOM; counters derive from membership. */
+    reconcile(snapshot, detach) {
+      const current = new Map(snapshot.map(unit => [unit.anchor, unit]));
+      let removed = 0;
+      for (const [id, unit] of units) {
+        const live = current.get(unit.anchor);
+        if (live && live.hash === unit.hash && live.node === unit.node) continue;
+        units.delete(id);
+        detach(unit);
+        removed++;
+      }
+      return removed;
+    },
+
+    commit(unit, attempt, state, apply) {
+      if (!active() || units.get(unit.id) !== unit || unit.attempt !== attempt) return false;
+      if (unit.state !== 'pending') return false;
+      if (!apply()) {
+        units.delete(unit.id);
+        return false;
+      }
+      unit.state = state;
+      return true;
     },
 
     assignPaths(batch) {
@@ -59,18 +121,15 @@ export function createPageSession() {
       bypassCache = Boolean(value);
     },
 
-    markDone(delta = 1) {
-      done = Math.max(0, done + delta);
-    },
-
-    markFailed(delta = 1) {
-      failed = Math.max(0, failed + delta);
-    },
-
-    addUsage(usage) {
-      if (!usage) return;
-      tokens.input += usage.input || 0;
-      tokens.output += usage.output || 0;
+    addUsage(usage, phase = 'translation', incomplete = false) {
+      if (phase !== 'translation' && phase !== 'preflight') throw new Error('Unknown usage phase');
+      const bucket = tokens[phase];
+      bucket.incomplete ||= Boolean(incomplete);
+      for (const key of ['input', 'output']) {
+        const value = usage?.[key];
+        if (Number.isFinite(value) && value >= 0) bucket[key] += value;
+        else if (usage) bucket.incomplete = true;
+      }
     },
 
     addCachedItems(items) {
@@ -112,7 +171,7 @@ export function createPageSession() {
       const generation = ++preflightGeneration;
       return {
         generation,
-        isCurrent: () => active && preflightGeneration === generation
+        isCurrent: () => active() && preflightGeneration === generation
       };
     },
 
@@ -121,13 +180,13 @@ export function createPageSession() {
      * 建立的新 gate 清掉；这正是 SPA 快速换页时最容易发生的竞态。
      */
     beginGate(task) {
-      if (!active) return Promise.resolve(null);
+      if (!active()) return Promise.resolve(null);
       const generation = ++gateGeneration;
       let current;
       current = Promise.resolve()
         .then(task)
         .finally(() => {
-          if (!active) return;
+          if (!active()) return;
           if (gateGeneration === generation && gate === current) gate = null;
         });
       gate = current;
@@ -137,11 +196,11 @@ export function createPageSession() {
     async waitForGate() {
       // 等待期间 gate 可能被“重置画像 → 新预检”替换。只 await 一次会在旧 gate
       // 返回后直接放行，把新 gate 绕过去；所以一直跟到当前 gate 真正为空为止。
-      while (active) {
+      while (active()) {
         const current = gate;
         if (!current) return true;
         await current;
-        if (!active) return false;
+        if (!active()) return false;
         if (gate === current) return true;
       }
       return false;
@@ -149,12 +208,19 @@ export function createPageSession() {
   };
 
   Object.defineProperties(session, {
-    total: { enumerable: true, get: () => total },
-    done: { enumerable: true, get: () => done },
-    failed: { enumerable: true, get: () => failed },
+    total: { enumerable: true, get: () => units.size },
+    done: { enumerable: true, get: () => [...units.values()].filter(u => u.state === 'done').length },
+    failed: { enumerable: true, get: () => [...units.values()].filter(u => u.state === 'error').length },
     profile: { enumerable: true, get: () => profile },
+    errorMessage: { enumerable: true, get: () => errorStreak.msg },
     drift: { enumerable: true, get: () => drift },
-    tokens: { enumerable: true, get: () => ({ ...tokens }) },
+    // One owner, two phase buckets; page totals are always derived.
+    tokens: { enumerable: true, get: () => ({
+      input: totalUsage().input, output: totalUsage().output, cachedUnits: tokens.cachedUnits
+    }) },
+    usageByPhase: { enumerable: true, get: () => ({
+      translate: { ...tokens.translation }, preflight: { ...tokens.preflight }, total: totalUsage()
+    }) },
     bypassCache: { enumerable: true, get: () => bypassCache },
     gate: { enumerable: true, get: () => gate }
   });

@@ -1,4 +1,6 @@
+import { createActionFeedback } from '../shared/action-feedback.js';
 import { FAB_CSS } from './ui-css.js';
+import { translateUi } from '../shared/ui-language.js';
 
 /**
  * 悬浮球：挂载、宿主、拖动、菜单、状态、失败提示、自愈，全部在这一个文件里。
@@ -23,12 +25,23 @@ let root = null;
 let shell = null;
 let handlers = {};
 let config = {};
+const t = (...args) => translateUi(config.targetLang, ...args);
 let watchdog = null;
 let outsideClick = null;
 let pressTimer = null;
 let flashTimer = null;
 let drag = null;
 let onFullscreen = null;
+const feedback = createActionFeedback({ translate: text => t(text), announce: (message, tone) => flash(message, tone) });
+
+function runMenuAction(button, act) {
+  const options = {
+    translate: { pending: '处理中…', success: '已完成', group: 'page-start' },
+    preflight: { pending: '读取中…', success: '已更新', group: 'preflight' },
+    clear: { pending: '清理中…', success: '已清除', group: 'page-clear' }
+  };
+  void feedback.run(button, () => handlers[act]?.(), options[act]);
+}
 
 /* ------------------------------ 构建与自愈 ------------------------------ */
 
@@ -56,13 +69,13 @@ function build() {
   shell = document.createElement('div');
   shell.className = 'fab-shell';
   shell.innerHTML = `
-    <button type="button" class="btn" title="翻译本页（长按更多，可上下拖动）">${ICON}</button>
+    <button type="button" class="btn">${ICON}</button>
     <div class="menu" hidden>
-      <button type="button" data-act="translate">翻译本页</button>
-      <button type="button" data-act="preflight">刷新页面语境</button>
-      <button type="button" data-act="clear">清除译文</button>
+      <button type="button" data-act="translate"></button>
+      <button type="button" data-act="preflight"></button>
+      <button type="button" data-act="clear"></button>
     </div>
-    <div class="tip" hidden></div>`;
+    <div class="tip jt-action-notice" role="status" aria-live="polite" aria-atomic="true" hidden></div>`;
   root.appendChild(shell);
 
   bindEvents();
@@ -83,7 +96,7 @@ function bindEvents() {
   btn.addEventListener('click', () => {
     if (drag?.moved) return; // 拖完不要顺手触发翻译
     if (!menu.hidden) return openMenu(false);
-    handlers.translate?.();
+    runMenuAction(btn, 'translate');
   });
   btn.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -123,7 +136,7 @@ function bindEvents() {
     const act = e.target?.dataset?.act;
     if (!act) return;
     openMenu(false);
-    handlers[act]?.();
+    runMenuAction(e.target, act);
   });
 
   outsideClick = (e) => {
@@ -211,31 +224,37 @@ export function sync(nextConfig, nextHandlers) {
   if (!isHealthy()) build();
   else applyPosition();
   startWatchdog();
+  syncPhase();
   return true;
 }
 
 export function syncPhase() {
   if (!isHealthy()) return;
+  for (const [act, text] of Object.entries({ translate: t('翻译本页'), preflight: t('刷新页面语境'), clear: t('清除译文') })) {
+    root.querySelector(`[data-act="${act}"]`).textContent = t(text);
+  }
   const s = handlers.state?.();
   const busy = s?.phase === 'translating' || s?.phase === 'scanning';
   host.dataset.running = busy ? '1' : '0';
   const btn = root.querySelector('.btn');
   if (btn) {
     btn.title = busy
-      ? '正在翻译，点击停止'
+      ? t('正在翻译，点击停止')
       : s?.done || s?.failed
-        ? '重新翻译本页（长按更多）'
-        : '翻译本页（长按更多，可上下拖动）';
+        ? t('重新翻译本页（长按更多）')
+        : t('翻译本页（长按更多，可上下拖动）');
   }
 }
 
 /** 点击失败要有反馈 —— 静默吞掉会让人以为悬浮球坏了 */
-export function flash(message) {
+export function flash(message, tone = 'error') {
   if (!isHealthy() || !message) return;
   const tip = root.querySelector('.tip');
   tip.textContent = message;
+  tip.dataset.tone = tone;
   tip.hidden = false;
   clearTimeout(flashTimer);
+  if (tone === 'busy') return;
   flashTimer = setTimeout(() => {
     tip.hidden = true;
   }, 3200);

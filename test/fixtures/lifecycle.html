@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Just Translate lifecycle fixture</title>
+<style>
+  body { max-width: 760px; margin: 40px auto; padding: 0 20px; font: 18px/1.7 system-ui; }
+  nav { position: sticky; top: 0; background: white; padding: 12px 0; }
+  button { font: inherit; margin: 4px; padding: 8px 12px; cursor: pointer; }
+</style>
+<nav translate="no">
+  <button id="add">加入一段新正文</button>
+  <button id="long">追加长页面内容</button>
+  <p>用于生命周期验收；操作步骤见 docs/MAINTENANCE.md。</p>
+</nav>
+<article>
+  <h1>Battery settings and background activity</h1>
+  <p>Battery life depends on how you use your device and which applications run in the background.</p>
+  <p>Check the daily usage chart to understand when your device uses the most energy.</p>
+  <p>A stronger wireless signal can help reduce the energy used by the network connection.</p>
+</article>
+<script>
+  let sequence = 0;
+  function appendParagraph() {
+    const p = document.createElement('p');
+    p.textContent = `Section ${++sequence}: Background activity can continue after an application leaves the screen. Review the usage chart before changing your settings.`;
+    document.querySelector('article').append(p);
+  }
+  document.querySelector('#add').onclick = appendParagraph;
+  document.querySelector('#long').onclick = () => { for (let i = 0; i < 100; i++) appendParagraph(); };
+</script>
+</html>

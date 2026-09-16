@@ -8,6 +8,23 @@ let mem = new Map();
 let loading = null;
 let dirty = false;
 let flushTimer = null;
+let generation = 0;
+let persistence = Promise.resolve();
+
+export const cacheGeneration = () => generation;
+
+/** Bound structured profile records within the existing store; no second cache. */
+export function trimCacheNamespace(prefix, limit) {
+  const entries = [...mem.entries()].filter(([key]) => key.startsWith(prefix));
+  entries.sort((a, b) => b[1].ts - a[1].ts);
+  for (const [key] of entries.slice(limit)) mem.delete(key);
+}
+
+function persist(operation) {
+  const task = persistence.then(operation);
+  persistence = task.catch(() => {});
+  return task;
+}
 
 /**
  * fingerprint 由 promptFingerprint() 给出，已经含 PROMPT_VERSION、目标语言、
@@ -20,13 +37,14 @@ export function cacheKey({ providerId, endpoint = '', model, fingerprint, text }
 /** 共享同一个 promise：并发初始化时只读一次 storage。 */
 export async function initCache() {
   if (!loading) {
+    const current = generation;
     loading = (async () => {
       try {
         const stored = await chrome.storage.local.get(STORE_KEY);
         const obj = stored[STORE_KEY];
-        if (obj && typeof obj === 'object') mem = new Map(Object.entries(obj));
+        if (current === generation && obj && typeof obj === 'object') mem = new Map(Object.entries(obj));
       } catch {
-        mem = new Map();
+        if (current === generation) mem = new Map();
       }
     })();
   }
@@ -41,8 +59,12 @@ export function getCached(key) {
   return hit.t;
 }
 
-export function putCached(key, text) {
-  mem.set(key, { t: text, ts: Date.now() });
+export function cacheContextScope(key) {
+  return mem.get(key)?.contextScope;
+}
+
+export function putCached(key, text, contextScope) {
+  mem.set(key, { t: text, ts: Date.now(), ...(contextScope ? { contextScope } : {}) });
   dirty = true;
   scheduleFlush();
 }
@@ -52,9 +74,10 @@ export function cacheStats() {
 }
 
 export async function clearCache() {
+  generation++;
   mem = new Map();
   dirty = false;
-  await chrome.storage.local.remove(STORE_KEY);
+  await persist(() => chrome.storage.local.remove(STORE_KEY));
 }
 
 function scheduleFlush() {
@@ -74,7 +97,8 @@ export async function flush() {
     mem = new Map(sorted.slice(0, LIMITS.CACHE_MAX_ENTRIES));
   }
   try {
-    await chrome.storage.local.set({ [STORE_KEY]: Object.fromEntries(mem) });
+    const snapshot = Object.fromEntries(mem);
+    await persist(() => chrome.storage.local.set({ [STORE_KEY]: snapshot }));
   } catch {
     dirty = true;
   }

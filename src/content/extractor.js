@@ -1,7 +1,8 @@
 import { hashString } from '../shared/hash.js';
 import { LIMITS } from '../shared/constants.js';
-import { ASIDE_SELECTORS, findContentRoot, isLinkList } from './content-root.js';
-import { isTranslationNode, translationFor } from './renderer.js';
+import { ASIDE_SELECTORS, CONTENT_SELECTORS, isLinkList } from './content-root.js';
+import { isTranslationNode, translationFor, withSourceVisible } from './renderer.js';
+import { closestInPage, containsInPage, parentInPage, queryPage, renderedChildren } from './dom-roots.js';
 
 /**
  * 提取器把 DOM 变成"翻译单元"。这是整个项目最难做对的部分，所以规则全部集中在这里，
@@ -27,7 +28,7 @@ const KEEP_INLINE = new Set(['CODE', 'KBD', 'SAMP', 'VAR', 'TT']);
 const DROP_INLINE = new Set([
   'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'MATH', 'CANVAS', 'AUDIO', 'VIDEO',
   'TRACK', 'SOURCE', 'MAP', 'AREA', 'EMBED', 'OBJECT', 'TEXTAREA', 'INPUT', 'SELECT',
-  'OPTION', 'OPTGROUP', 'DATALIST', 'PROGRESS', 'METER', 'SLOT'
+  'OPTION', 'OPTGROUP', 'DATALIST', 'PROGRESS', 'METER'
 ]);
 
 const CUT_BLOCK = new Set([
@@ -45,7 +46,7 @@ const APPEND_INSIDE = new Set([
   'LI', 'TD', 'TH', 'DD', 'DT', 'FIGCAPTION', 'CAPTION', 'SUMMARY', 'BLOCKQUOTE', 'BUTTON', 'A'
 ]);
 
-const SKIP_ROLES = new Set(['code', 'math', 'img', 'presentation', 'none']);
+const SKIP_ROLES = new Set(['code', 'math', 'img']);
 
 /** 探测行内元素肚子里有没有块级后代 —— Google 搜索结果就是 <a> 里裹整块卡片 */
 const BLOCK_PROBE =
@@ -66,43 +67,6 @@ export function resetIds() {
 
 function normalize(text) {
   return text.replace(/[\t\r\n]+/g, ' ').replace(/\u00a0/g, ' ').replace(/\s{2,}/g, ' ').trim();
-}
-
-/**
- * 脚本占比。汉字与假名必须分开统计 ——
- * 之前把它们并成一个"CJK"集合，于是目标语言是中文时，
- * 日文正文（大量假名）会被判成"已经是目标语言"整页跳过，反向同理。
- * 脚本不等于语言，这是两回事。
- */
-function scriptRatio(text, re) {
-  const hit = text.match(re);
-  return hit ? hit.length / text.length : 0;
-}
-
-const HAN = /[\u3400-\u9fff\uf900-\ufaff]/g;
-const KANA = /[\u3040-\u309f\u30a0-\u30ff]/g;
-const HANGUL = /[\uac00-\ud7af\u1100-\u11ff]/g;
-
-/** 目标语言用哪套文字 */
-function targetScript(lang) {
-  const s = String(lang || '');
-  if (/日本語|japanese/i.test(s)) return 'kana';
-  if (/한국|韩语|韓語|korean/i.test(s)) return 'hangul';
-  if (/中文|汉语|漢語|chinese/i.test(s)) return 'han';
-  return '';
-}
-
-/**
- * 这段文本是否已经是目标语言。
- * 日文含大量汉字，所以判日文要看假名而不是汉字；
- * 反过来判中文时，出现假名就说明它不是中文。
- */
-function alreadyTarget(text, script) {
-  if (!script) return false;
-  if (script === 'kana') return scriptRatio(text, KANA) > 0.1;
-  if (script === 'hangul') return scriptRatio(text, HANGUL) > 0.3;
-  // 目标是中文：汉字占比高，且几乎没有假名
-  return scriptRatio(text, HAN) > 0.5 && scriptRatio(text, KANA) < 0.02;
 }
 
 const HAS_LETTER = /\p{L}/u;
@@ -127,41 +91,56 @@ function isSingleToken(text) {
   return !/\s/.test(stripped);
 }
 
-function isTranslatable(text, opts, el) {
-  if (!text || text.length < (opts.minTextLength ?? 2)) return false;
-  if (!HAS_LETTER.test(text)) return false;
-  if (PURE_NOISE.test(text)) return false;
-  if (URLISH.test(text)) return false;
-  if (opts.skipSameScript && alreadyTarget(text, opts.targetScript)) return false;
+function textRejection(text, opts, el) {
+  if (!text) return 'empty';
+  if (text.length < (opts.minTextLength ?? 2)) return 'too-short';
+  if (!HAS_LETTER.test(text) || PURE_NOISE.test(text)) return 'noise';
+  if (URLISH.test(text)) return 'url-or-email';
 
   const heading = el ? HEADING_TAGS.has(tagOf(el)) : false;
-  if (opts.skipSingleToken && !heading && isSingleToken(text)) return false;
-  return true;
+  if (opts.skipSingleToken && !heading && isSingleToken(text)) return 'single-token';
+  return null;
 }
 
-function isSkippedElement(el, opts) {
-  if (isTranslationNode(el)) return true;
-  if (el.id === 'byom-hud') return true;
-  if (el.isContentEditable) return true;
-  if (el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === '') return true;
-  if (el.getAttribute('translate') === 'no') return true;
-  if (el.classList?.contains('notranslate')) return true;
-  if (el.getAttribute('aria-hidden') === 'true') return true;
-  if (SKIP_ROLES.has(el.getAttribute('role'))) return true;
-  if (el.dataset?.byomSkip !== undefined) return true;
+function elementRejection(el, opts) {
+  if (el.isContentEditable || el.matches('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"]')) return 'editable';
+  if (el.matches('#byom-hud, #byom-fab, [translate="no"], .notranslate, [data-byom-skip]')) return 'explicit-skip';
+  if (el.matches('[aria-hidden="true"], [hidden]')) return 'hidden';
+  if (SKIP_ROLES.has(el.getAttribute('role'))) return 'non-text-role';
   // 逃生口本身不能炸：一个写错的选择器会让 matches 抛 SyntaxError，
   // 被 scan 最外层的 catch 吞掉 —— 表现为整页零提取且只有控制台有线索。
   if (opts.skipSelectors) {
     try {
-      if (el.matches(opts.skipSelectors)) return true;
+      if (el.matches(opts.skipSelectors)) return 'user-selector';
     } catch {
       opts.skipSelectors = ''; // 本轮扫描不再重试，避免每个元素抛一次
+      if (opts.trace) opts.trace.invalidSkipSelector = true;
     }
   }
-  // 正文根内部仍有目录、侧栏、编辑提示这类附属区块
-  if (opts.skipAside && el.matches(ASIDE_SELECTORS)) return true;
-  if (el.checkVisibility && !el.checkVisibility()) return true;
-  return false;
+  const style = getComputedStyle(el);
+  if (style.display === 'none' || style.contentVisibility === 'hidden') return 'hidden';
+  // display:contents 没有自己的盒子，因此 checkVisibility() 为 false；后代仍然可见。
+  if (style.display !== 'contents' && el.checkVisibility && !el.checkVisibility()) return 'hidden';
+  return null;
+}
+
+function countDecision(opts, group, reason) {
+  if (!opts.trace) return;
+  const counts = opts.trace[group];
+  counts[reason] = (counts[reason] || 0) + 1;
+}
+
+function isSkippedElement(el, opts) {
+  if (isTranslationNode(el)) return true;
+  const reason = elementRejection(el, opts);
+  if (reason) countDecision(opts, 'skippedElements', reason);
+  return Boolean(reason);
+}
+
+function acceptsText(el, text, opts) {
+  const reason = textRejection(text, opts, el) || layoutRejection(el, text, opts);
+  if (reason) countDecision(opts, 'skippedCandidates', reason);
+  return !reason;
 }
 
 /** SVG / MathML 元素的 tagName 不是大写（svg、math），必须统一后再查表 */
@@ -172,6 +151,8 @@ function tagOf(el) {
 function isInline(node) {
   if (node.nodeType === Node.TEXT_NODE) return true;
   if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  // 开放组件单独进入其渲染树，避免原生 textContent 忽略内部内容。
+  if (node.shadowRoot) return false;
   const tag = tagOf(node);
 
   // 自定义元素（标签名带连字符）不在任何 HTML 语义表里，浏览器默认按 inline 渲染，
@@ -198,48 +179,63 @@ function isInline(node) {
  * 容器放不下译文的地方，插进去只会撑坏排版或者根本看不见 —— 两种情况都是白花钱。
  * 这些判断天生是启发式的，会有误判，逃生口是设置里的「跳过选择器」。
  */
-function layoutRejects(el, text, opts) {
-  if (!opts.skipTightLayout) return false;
-  if (!el || !el.isConnected || typeof getComputedStyle !== 'function') return false;
+function layoutRejection(el, text, opts) {
+  if (auxiliaryLabel(el, text, opts)) return 'auxiliary-label';
+  if (!opts.skipTightLayout) return null;
+  if (!el || !el.isConnected || typeof getComputedStyle !== 'function') return null;
 
-  const short = text.length <= opts.uiTextMax;
   const cs = getComputedStyle(el);
-
-  if (cs.whiteSpace === 'nowrap' || cs.whiteSpace === 'pre') return true;
-  if (cs.textOverflow === 'ellipsis') return true;
-  const clamp = cs.webkitLineClamp || cs.WebkitLineClamp;
-  if (clamp && clamp !== 'none') return true;
-
-  // 已经在裁剪自己内容的容器，再加一行也是看不见的
-  if ((cs.overflow === 'hidden' || cs.overflowY === 'hidden') && el.scrollHeight > el.clientHeight + 4) {
-    return true;
-  }
-  if (cs.position === 'fixed' || cs.position === 'sticky') return true;
-
-  // flex / grid 的子项通常是被算好尺寸的 UI 元件，插一行会把整排顶乱
-  const parent = el.parentElement;
-  if (short && parent) {
-    const pd = getComputedStyle(parent).display;
-    if (pd.includes('flex') || pd.includes('grid')) return true;
-  }
-
-  // 导航、页眉、页脚里的短文本是界面而不是正文
-  if (short && !HEADING_TAGS.has(tagOf(el)) && el.closest?.(UI_CONTAINERS)) return true;
+  if (clipsTranslation(el, cs)) return 'clipped-layout';
 
   // 语义标签靠不住：ArchWiki 的顶栏是 <div id="archnavbar"><ul>，一个 nav 都没有。
   // 改用链接密度 —— 容器里几乎全是短链接就是导航，不管它用什么标签。
-  if (short && !HEADING_TAGS.has(tagOf(el))) {
-    const list = el.closest?.('ul,ol,nav,div');
-    if (list && isLinkList(list)) return true;
+  if (!HEADING_TAGS.has(tagOf(el)) && !SENTENCE_END.test(text)) {
+    const list = closestInPage(el, 'ul,ol,nav,div');
+    // 正文 main/article 里的“了解更多 / 参考资料”本来就是内容。它同样可能是纯短链接
+    // 列表，不能因为链接密度高就当成顶栏导航。
+    if (list && isLinkList(list) && !isArticleList(list, opts.contentRoot)) return 'link-list';
   }
 
-  return false;
+  return null;
+}
+
+function auxiliaryLabel(el, text, opts) {
+  if (text.length > opts.uiTextMax || HEADING_TAGS.has(tagOf(el)) || SENTENCE_END.test(text)) return false;
+  if (opts.skipAside && closestInPage(el, ASIDE_SELECTORS)) return true;
+  return Boolean(opts.skipTightLayout && closestInPage(el, UI_CONTAINERS));
+}
+
+function clipsTranslation(el, style) {
+  if (['nowrap', 'pre'].includes(style.whiteSpace)) return true;
+  if (style.textOverflow === 'ellipsis') return true;
+  const clamp = style.webkitLineClamp || style.WebkitLineClamp;
+  if (Number.parseInt(clamp, 10) > 0) return true;
+  if ([style.overflow, style.overflowY].includes('hidden') && el.scrollHeight > el.clientHeight + 4) return true;
+  return ['fixed', 'sticky'].includes(style.position);
+}
+
+function isArticleList(list, root) {
+  return Boolean(containsInPage(root, list) && closestInPage(list, CONTENT_SELECTORS)
+    && !closestInPage(list, UI_CONTAINERS) && !closestInPage(list, ASIDE_SELECTORS));
+}
+
+function leafPlacement(el) {
+  // 沿用 DOM 上已有的回填归属，响应式布局变化不能制造第二份译文。
+  if (el.hasAttribute('data-byom-src-in') || APPEND_INSIDE.has(tagOf(el))) return 'append';
+  if (el.hasAttribute('data-byom-src')) return 'after';
+  // 命名插槽只投影原元素；新兄弟节点可能被分配到别处或完全不可见。
+  if (el.assignedSlot) return 'append';
+  let parent = parentInPage(el);
+  while (parent && getComputedStyle(parent).display === 'contents') parent = parentInPage(parent);
+  const parentDisplay = parent ? getComputedStyle(parent).display : '';
+  if (/flex|grid/.test(parentDisplay) && !/flex|grid/.test(getComputedStyle(el).display)) return 'append';
+  return 'after';
 }
 
 /** 译文的排版角色：决定字号层级，与字体差异化是两条正交的规则 */
 function roleOf(el, text, opts) {
   if (HEADING_TAGS.has(tagOf(el))) return 'heading';
-  if (text.length <= opts.uiTextMax && el.closest?.(UI_CONTAINERS)) return 'ui';
+  if (text.length <= opts.uiTextMax && closestInPage(el, UI_CONTAINERS)) return 'ui';
   return 'body';
 }
 
@@ -250,7 +246,7 @@ function makeUnit({ el, anchor, mode, text, opts }) {
     srcSize = parseFloat(getComputedStyle(el).fontSize) || 0;
   }
   return {
-    id: nextId++,
+    id: opts.snapshot ? 0 : nextId++,
     el,
     anchor,
     mode, // 'after' | 'append'
@@ -270,8 +266,9 @@ function makeUnit({ el, anchor, mode, text, opts }) {
  *   失败的段落由用户双击重翻。
  * - hash 不同说明原文被改写了（SPA 常见），复用旧节点重新翻译。
  */
-function reuseOrSkip(unit) {
+function reuseOrSkip(unit, opts) {
   const existing = translationFor(unit);
+  if (opts.snapshot) { unit.node = existing; return unit; }
   if (!existing) return unit;
   if (existing.dataset.byomHash === unit.hash) return null;
   unit.node = existing;
@@ -289,48 +286,58 @@ function childRole(node, opts) {
   if (node.nodeType !== Node.ELEMENT_NODE) return 'drop';
   if (isTranslationNode(node)) return 'own';
   const tag = tagOf(node);
+  if (DROP_INLINE.has(tag)) {
+    countDecision(opts, 'skippedElements', 'non-content-tag');
+    return 'drop';
+  }
+  if (isSkippedElement(node, opts)) return KEEP_INLINE.has(tag) || isInline(node) ? 'drop' : 'cut';
+  countBoundary(node, opts);
   if (KEEP_INLINE.has(tag)) return 'keep';
-  if (DROP_INLINE.has(tag)) return 'drop';
-  if (CUT_BLOCK.has(tag)) return 'cut';
-  if (isSkippedElement(node, opts)) return isInline(node) ? 'drop' : 'cut';
+  if (CUT_BLOCK.has(tag)) {
+    countDecision(opts, 'skippedElements', 'block-boundary');
+    return 'cut';
+  }
   return isInline(node) ? 'keep' : 'block';
 }
 
-/** run = 连续的行内内容。counted 的才进正文，drop 的只是不打断句子。 */
-function pieceText({ node, counted }) {
-  if (!counted) return '';
-  // <br> 是显式换行，textContent 为空 —— 直接拼接会把两侧的句子粘死，补一个空格
-  if (node.nodeType === Node.ELEMENT_NODE && tagOf(node) === 'BR') return ' ';
-  return node.textContent || '';
+function countBoundary(el, opts) {
+  if (!opts.trace) return;
+  if (el.shadowRoot) opts.trace.openShadowHosts++;
+  if (['IFRAME', 'FRAME'].includes(tagOf(el))) opts.trace.frameBoundaries++;
 }
 
-function runText(run) {
-  return normalize(run.map(pieceText).join(''));
+/** run = 连续的行内内容。counted 的才进正文，drop 的只是不打断句子。 */
+function pieceText({ node, counted }, opts) {
+  if (!counted) return '';
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+  // <br> 是显式换行，textContent 为空 —— 直接拼接会把两侧的句子粘死，补一个空格
+  if (node.nodeType === Node.ELEMENT_NODE && tagOf(node) === 'BR') return ' ';
+  // textContent 会越过嵌套的 notranslate、隐藏内容和控件；行内后代也走同一套规则。
+  let result = '';
+  for (const child of renderedChildren(node)) {
+    const role = childRole(child, opts);
+    if (role === 'keep') result += pieceText({ node: child, counted: true }, opts);
+    // 未被标签表识别的嵌套块仍须保留文本，并在边界补空格。
+    if (role === 'block') result += ' ' + pieceText({ node: child, counted: true }, opts) + ' ';
+  }
+  return result;
+}
+
+function runText(run, opts) {
+  return normalize(run.map(piece => pieceText(piece, opts)).join(''));
 }
 
 function collectRun(run, el, out, opts, stray) {
   if (!run.length) return;
-  const text = runText(run);
-  if (!isTranslatable(text, opts, el)) return;
-  if (layoutRejects(el, text, opts)) return;
+  const text = runText(run, opts);
+  if (!acceptsText(el, text, opts)) return;
   const unit = reuseOrSkip(
-    makeUnit({ el, anchor: run[run.length - 1].node, mode: 'after', text, opts })
+    makeUnit({ el, anchor: run[run.length - 1].node, mode: 'after', text, opts }), opts
   );
   if (!unit) return;
   // run 中间夹着旧译文（原文后面又被追加了内容）：复用它，避免留下孤儿节点
   if (!unit.node && stray && stray.isConnected) unit.node = stray;
   out.push(unit);
-}
-
-/** 叶子块的正文同样要排除 drop 掉的行内内容，不能直接用 textContent */
-function leafText(el, opts) {
-  const run = [];
-  for (const node of el.childNodes) {
-    const role = childRole(node, opts);
-    if (role === 'own') continue;
-    run.push({ node, counted: role === 'keep' });
-  }
-  return runText(run);
 }
 
 function walk(el, out, opts) {
@@ -340,7 +347,7 @@ function walk(el, out, opts) {
   let stray = null; // run 中间遇到的旧译文节点
   let sawBlockChild = false;
 
-  for (const node of el.childNodes) {
+  for (const node of renderedChildren(el)) {
     const role = childRole(node, opts);
     if (role === 'own') {
       if (run.length) stray = node; // 只有夹在 run 中间才算 stray，尾随的属于正常情况
@@ -360,11 +367,10 @@ function walk(el, out, opts) {
 
   if (!sawBlockChild) {
     // 整个元素就是一个叶子块：锚点用元素本身，位置最稳
-    const text = leafText(el, opts);
-    if (!isTranslatable(text, opts, el)) return;
-    if (layoutRejects(el, text, opts)) return;
-    const mode = APPEND_INSIDE.has(tagOf(el)) ? 'append' : 'after';
-    const unit = reuseOrSkip(makeUnit({ el, anchor: el, mode, text, opts }));
+    const text = runText(run, opts);
+    if (!acceptsText(el, text, opts)) return;
+    const mode = leafPlacement(el);
+    const unit = reuseOrSkip(makeUnit({ el, anchor: el, mode, text, opts }), opts);
     if (unit) out.push(unit);
     return;
   }
@@ -376,43 +382,63 @@ function walk(el, out, opts) {
  * 扫描 root 下所有待翻译单元。
  * 已翻译且未变化的内容会被自然跳过，所以可以对同一页面重复调用（动态内容就靠这个）。
  */
-export function scan(root, config) {
+export function scan(root, config, options) {
+  return withSourceVisible(() => scanVisible(root, config, options));
+}
+
+function scanVisible(root, config, { snapshot = false, trace = null } = {}) {
   const opts = {
+    snapshot,
+    trace,
     minTextLength: config.minTextLength,
-    // 界面上是一个开关，核心仍分三档：它们解决的是同一件事，
-    // 但排查问题时需要能单独关掉某一档（比如无布局环境下的布局判断）。
-    // 显式传了细粒度开关就以它为准，否则跟随 smartFilter。
-    skipSameScript: config.skipSameScript ?? config.smartFilter !== false,
+    // 只过滤结构噪音与受限布局，不根据源文语言或字符占比推断是否该翻译。
     skipSingleToken: config.skipSingleToken ?? config.smartFilter !== false,
     skipTightLayout: config.skipTightLayout ?? config.smartFilter !== false,
     skipSelectors: (config.skipSelectors || '').trim(),
     skipAside: config.contentRootOnly !== false,
-    uiTextMax: LIMITS.UI_TEXT_MAX_CHARS,
-    targetScript: targetScript(config.targetLang)
+    uiTextMax: LIMITS.UI_TEXT_MAX_CHARS
   };
   const out = [];
-  let start = root && root.nodeType === Node.ELEMENT_NODE ? root : document.body;
+  const start = root && root.nodeType === Node.ELEMENT_NODE ? root : document.body;
   if (!start) return out;
 
-  // 正文优先：先把范围收到正文根，语义与布局规则只作为根内的二次过滤。
-  // 之前没有这一步，"正文优先"只是个名字。
-  if (config.contentRootOnly !== false && (start === document.body || start === document.documentElement)) {
-    const detected = findContentRoot(document);
-    if (detected) start = detected;
-  }
+  // main/article 只是内容线索。多篇文章、异名容器、根外正文都应继续接受同一套判断。
+  opts.contentRoot = start;
   try {
+    countBoundary(start, opts);
     walk(start, out, opts);
   } catch (e) {
+    if (trace) trace.completed = false;
     console.warn('[BYOM] 扫描中断', e);
   }
   return out;
+}
+
+/** 只在复制诊断时重算；不保存 DOM、正文、URL 或跨次扫描的状态。 */
+export function inspectExtraction(root, config) {
+  const trace = {
+    scope: 'top-document-open-shadow-dom',
+    completed: true,
+    invalidSkipSelector: false,
+    skippedElements: {},
+    skippedCandidates: {},
+    frameBoundaries: 0,
+    openShadowHosts: 0
+  };
+  const units = scan(root, config, { snapshot: true, trace });
+  return {
+    ...trace,
+    candidateUnits: units.length,
+    sourceChars: units.reduce((total, unit) => total + unit.text.length, 0),
+    existingTranslationUnits: units.filter(unit => unit.node?.dataset.byomHash === unit.hash).length
+  };
 }
 
 /** 页面语境：给 prompt 和本地分类器用，不含正文，成本可忽略 */
 export function collectPageContext() {
   const meta = (name) =>
     document.querySelector(`meta[name="${name}"], meta[property="${name}"]`)?.content || '';
-  const headings = [...document.querySelectorAll('h1, h2')]
+  const headings = [...queryPage('h1, h2')]
     .slice(0, 12)
     .map((h) => normalize(h.textContent || ''))
     .filter(Boolean);

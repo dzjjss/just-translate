@@ -16,7 +16,7 @@ const CONFIG = {
 // 排版检测在 jsdom 里拿不到真实布局，单独开关掉以免干扰其它用例
 const LOOSE = { ...CONFIG, skipTightLayout: false };
 
-let scan, resetIds, collectPageContext, attach, fill, buildChunks;
+let scan, resetIds, collectPageContext, inspectExtraction, attach, fill, buildChunks;
 let applyPresentation, removeAll, listProviders;
 let parseTranslationResponse, extractJsonObject, classifyPage, promptFingerprint, buildMessages;
 let buildPreflightMessages;
@@ -85,6 +85,128 @@ test('自定义元素裹着块级内容时不做行内合并（Google 卡片同�
   assert.deepEqual(texts(scan(doc.body, CONFIG)), ['Card title here', 'Card body paragraph.']);
 });
 
+test('presentation / none 只移除语义，不能抹去后代正文', () => {
+  const doc = mount(`<main><section role="presentation"><h2>Course instructions</h2>
+    <div role="none"><p>Please keep your own notes.</p>
+      <ul><li>Ask your peers for any missed notes.</li></ul></div>
+  </section></main>`);
+  assert.deepEqual(texts(scan(doc.body, CONFIG)), [
+    'Course instructions', 'Please keep your own notes.', 'Ask your peers for any missed notes.'
+  ]);
+});
+
+test('正文落在侧栏或导航标签内，仍保留段落、列表和成句短文本', () => {
+  for (const container of ['aside', 'nav', 'div class="sidebar"', 'div role="complementary"']) {
+    const tag = container.split(' ')[0];
+    const doc = mount(`<main><${container}><h2>Course instructions</h2>
+      <odd-wrapper><p>Questions about the course can be discussed with your peers.</p>
+        <ul><li>Please be respectful.</li><li>Keep notes during every class.</li></ul>
+      </odd-wrapper></${tag}></main>`);
+    assert.deepEqual(texts(scan(doc.body, CONFIG)), [
+      'Course instructions', 'Questions about the course can be discussed with your peers.',
+      'Please be respectful.', 'Keep notes during every class.'
+    ], container);
+  }
+});
+
+test('正文根是提示，不能丢掉多个 article 或 main 外面的正文', () => {
+  const doc = mount(`<nav><a>Course home</a><a>Course tools</a></nav>
+    <main><p>This introduction is long enough to be selected as the old content root.</p></main>
+    <article><p>Read the course instructions.</p></article>
+    <odd-panel><div>Contact the teaching team when you have questions.</div></odd-panel>`);
+  assert.deepEqual(texts(scan(doc.body, CONFIG)), [
+    'This introduction is long enough to be selected as the old content root.',
+    'Read the course instructions.', 'Contact the teaching team when you have questions.'
+  ]);
+});
+
+test('flex / grid 下的短段落保留，译文留在原有布局子项内部', () => {
+  for (const display of ['flex', 'grid']) {
+    const doc = mount(`<main style="display:${display}"><h2>Course notes</h2>
+      <p>Please be respectful.</p><p>Keep your notes.</p></main>`);
+    const units = scan(doc.body, CONFIG);
+    assert.deepEqual(texts(units), ['Course notes', 'Please be respectful.', 'Keep your notes.']);
+    units.forEach(u => { attach(u); fill(u, '【译】' + u.text); });
+    assert.equal(doc.querySelector('main').children.length, 3, '不能增加 flex/grid 子项');
+    assert.equal(scan(doc.body, CONFIG).length, 0, '回填后必须收敛');
+    doc.querySelector('main').style.display = 'block';
+    assert.equal(scan(doc.body, CONFIG).length, 0, '响应式布局变化不能改变已有译文的位置归属');
+    doc.querySelector('p').firstChild.textContent = 'Please keep discussions respectful.';
+    const changed = scan(doc.body, CONFIG);
+    assert.equal(changed.length, 1);
+    assert.ok(changed[0].node, '布局变化后的改写应复用原译文');
+  }
+});
+
+test('display:contents 没有盒子，但后代正文仍可见', () => {
+  const doc = mount('<main style="display:contents"><p>Visible content in a boxless container.</p></main>');
+  doc.querySelector('main').checkVisibility = () => false;
+  assert.deepEqual(texts(scan(doc.body, CONFIG)), ['Visible content in a boxless container.']);
+});
+
+test('放宽语义容器不越过明确跳过、隐藏与编辑边界', () => {
+  const doc = mount(`<main><aside role="presentation">
+    <div translate="no"><p>Do not translate this paragraph.</p></div>
+    <div class="excluded"><p>The user excluded this paragraph.</p></div>
+    <div contenteditable="true"><p>Unsubmitted text being edited.</p></div>
+    <div hidden><p>Hidden course content.</p></div>
+    <div style="display:none"><p>Content hidden using CSS.</p></div>
+    <div style="content-visibility:hidden"><p>Content hidden using content visibility.</p></div>
+    <pre>Example code must remain unchanged.</pre>
+    <p>Only the visible course notes remain.</p>
+  </aside></main>`);
+  assert.deepEqual(texts(scan(doc.body, { ...CONFIG, skipSelectors: '.excluded' })), [
+    'Only the visible course notes remain.'
+  ]);
+});
+
+test('嵌套行内文本仍遵守跳过规则，不能用 textContent 越过子树边界', () => {
+  const doc = mount(`<p>Read <span>the <b translate="no">excluded draft</b>
+    <em><input value="private"><span hidden>hidden draft</span>course notes</em></span>
+    <code translate="no">protected code</code> carefully.</p>`);
+  assert.deepEqual(texts(scan(doc.body, CONFIG)), ['Read the course notes carefully.']);
+});
+
+test('行内容器深处的未知块标签不能被静默丢弃', () => {
+  const doc = mount(`<p><span>Before<odd-wrapper><odd-block style="display:block">Course instructions.</odd-block>
+    <odd-block style="display:block">Please take your own notes.</odd-block></odd-wrapper>After.</span></p>`);
+  assert.deepEqual(texts(scan(doc.body, CONFIG)), [
+    'Before Course instructions. Please take your own notes. After.'
+  ]);
+});
+
+test('诊断统计反映实际过滤与已进入的开放组件，且不收集页面内容', () => {
+  const doc = mount(`<main><p>Course notes contain unique-source-marker.</p>
+    <p translate="no">excluded-marker</p><p class="user-excluded">user-marker</p>
+    <p hidden>hidden-marker</p><textarea>draft-marker</textarea>
+    <p>PrivateUsername</p><iframe src="about:blank"></iframe><course-body></course-body>
+    <div data-byom-skip><own-component></own-component></div></main>`);
+  doc.querySelector('course-body').attachShadow({ mode: 'open' }).innerHTML = '<p>shadow-marker</p>';
+  doc.querySelector('own-component').attachShadow({ mode: 'open' }).innerHTML = '<p>own-marker</p>';
+  const config = { ...CONFIG, skipSelectors: '.user-excluded' };
+  const initialHtml = doc.body.innerHTML;
+  const firstId = scan(doc.body, config)[0].id;
+  const stats = inspectExtraction(doc.body, config);
+  assert.equal(stats.scope, 'top-document-open-shadow-dom');
+  assert.equal(stats.completed, true);
+  assert.equal(stats.candidateUnits, 2);
+  assert.equal(stats.frameBoundaries, 1);
+  assert.equal(stats.openShadowHosts, 1, '扩展自己的组件不应计入');
+  assert.equal(stats.skippedElements['explicit-skip'], 2);
+  assert.equal(stats.skippedElements['user-selector'], 1);
+  assert.equal(stats.skippedElements.hidden, 1);
+  assert.equal(stats.skippedCandidates['single-token'], 1);
+  assert.ok(!JSON.stringify(stats).includes('marker'));
+  assert.equal(doc.body.innerHTML, initialHtml);
+  const units = scan(doc.body, config);
+  assert.equal(units[0].id, firstId + 2, '复制诊断不能占用翻译 ID');
+  units.forEach(u => { attach(u); fill(u, '译文'); });
+  assert.equal(inspectExtraction(doc.body, config).existingTranslationUnits, 2);
+  assert.deepEqual(inspectExtraction(doc.body, config), inspectExtraction(doc.body, config));
+  assert.equal(scan(doc.body, config).length, 0, '诊断不能让已翻译内容重新入队');
+  assert.equal(inspectExtraction(doc.body, { ...config, skipSelectors: '[' }).invalidSkipSelector, true);
+});
+
 test('<br> 两侧句子合成一个单元，且中间不粘连', () => {
   const doc = mount(`<body><article><p>First line of text.<br>Second line of text.</p></article></body>`);
   assert.deepEqual(texts(scan(doc.body, CONFIG)), ['First line of text. Second line of text.']);
@@ -108,22 +230,21 @@ test('notranslate / translate=no / aria-hidden / contenteditable 全部跳过', 
   assert.deepEqual(texts(scan(doc.body, CONFIG)), ['Only this line should be translated.']);
 });
 
-test('脚本不等于语言：日中互译不能因为都含汉字就整页跳过', () => {
+test('不按文字或源语言过滤：日中英正文均交给所选引擎', () => {
   const html = `<body><main>
     <p>これは日本語の文章です。翻訳されるべきです。</p>
     <p>Hello world, this is an English sentence.</p>
     <p>这是中文段落，不应该被翻译。</p>
   </main></body>`;
 
-  // 目标中文：日文段落必须翻（它含大量假名，不是中文），中文段落跳过
+  // 所选目标不会改变提取范围，包括原文已经同语言的情况。
   const zh = texts(scan(mount(html), { ...LOOSE, targetLang: '简体中文' }));
   assert.ok(zh.some((t) => t.includes('日本語')), '日文正文被当成"已经是中文"整段跳过了');
-  assert.ok(!zh.some((t) => t.includes('不应该被翻译')), '中文段落不该再翻一遍');
+  assert.ok(zh.some((t) => t.includes('不应该被翻译')), '不能猜测中文已经是目标语言后跳过');
 
-  // 反向：目标日文时，中文段落要翻，日文跳过
   const ja = texts(scan(mount(html), { ...LOOSE, targetLang: '日本語' }));
   assert.ok(ja.some((t) => t.includes('这是中文段落')), '中文正文被当成"已经是日文"跳过了');
-  assert.ok(!ja.some((t) => t.includes('これは日本語')), '日文段落不该再翻一遍');
+  assert.deepEqual(ja, zh, '切换用户语言不改变待翻译的正文范围');
 });
 
 test('无空格语言不是“单 token”：中文/泰文短段落翻成英语不能被 smartFilter 吞掉', () => {
@@ -149,14 +270,14 @@ test('跳过选择器写错一个字符，不能把整页扫描一起带走', ()
   assert.deepEqual(texts(scan(doc2, { ...LOOSE, skipSelectors: '.ad' })), ['Real content here.']);
 });
 
-test('纯数字 / 纯 URL / 已是目标语言的段落不消耗 token', () => {
+test('纯数字与 URL 仍跳过，但同语言正文照常提取', () => {
   const doc = mount(`<body>
     <p>42 / 3.14 — 2024</p>
     <p>https://example.com/a/b?c=d</p>
     <p>这一段已经是中文了。</p>
     <p>This one is not.</p>
   </body>`);
-  assert.deepEqual(texts(scan(doc.body, CONFIG)), ['This one is not.']);
+  assert.deepEqual(texts(scan(doc.body, CONFIG)), ['这一段已经是中文了。', 'This one is not.']);
 });
 
 test('列表 / 单元格 / 图注的译文追加到内部而不是插兄弟节点', () => {
@@ -335,12 +456,27 @@ test('单词条目默认不翻，但标题和成句短文本要翻', () => {
 
 test('导航与页眉里的短文本不翻，正文不受影响', () => {
   const doc = mount(`<body>
-    <nav><a href="/a">About LII</a><a href="/b">Get the law</a></nav>
+    <nav><a href="/a">About LII</a><a href="/b">Get the law</a><a href="/c">Course schedule</a></nav>
     <header><span>Search Cornell</span></header>
     <main><p>A security interest in chattel paper may be perfected by filing.</p></main>
   </body>`);
   const t = texts(scan(doc.body, CONFIG));
   assert.deepEqual(t, ['A security interest in chattel paper may be perfected by filing.']);
+});
+
+test('正文里的“了解更多”短链接列表不是导航，翻成英语时必须进入提取结果', () => {
+  const doc = mount(`<body><main><article>
+    <h2>进一步了解</h2>
+    <ul>
+      <li><a href="/health">进一步了解电池健康和容量</a></li>
+      <li><a href="/history">检查电池健康状况和历史记录</a></li>
+      <li><a href="/care">为电池充电并进行维护</a></li>
+    </ul>
+  </article></main></body>`);
+  const t = texts(scan(doc.body, { ...CONFIG, targetLang: 'English' }));
+  assert.ok(t.includes('进一步了解电池健康和容量'), JSON.stringify(t));
+  assert.ok(t.includes('检查电池健康状况和历史记录'), JSON.stringify(t));
+  assert.ok(t.includes('为电池充电并进行维护'), JSON.stringify(t));
 });
 
 test('译文角色：标题、正文、界面元素分得开', () => {
@@ -453,6 +589,8 @@ test('预检 prompt 本身要求 YAML，而不只是解析器碰巧能吃 YAML',
     assert.ok(system.includes(key), `预检 prompt 缺少分区：${key}`);
   }
   assert.ok(!system.includes('\n原则:'), '自动预检不应获得 page principle 权限');
+  assert.ok(system.includes('established target-language product label'));
+  assert.ok(system.includes('(max 32)'), '预检建议上限与实际 prompt 截断不一致');
   assert.ok(!system.includes('\n不翻:'), '自动预检不应获得 keep 权限');
   assert.ok(!system.includes('\n锁定:'), '自动预检不应获得 hard/锁定权限');
   // 风险词那一档绝不能要求给译法
@@ -717,7 +855,7 @@ test('规则文本：往返不丢，容忍手写的松散格式', () => {
   assert.ok(isEmptyRules(fromYaml('这不是规则，只是一段废话')));
 });
 
-test('风险词带义项：给义项不给译法，这是词典映射和放任之间唯一站得住的位置', () => {
+test('风险词保留候选义项，允许原句与邻接上下文推翻', () => {
   const withSense = fromYaml(`
 风险词:
   output: 指显示输出设备，不是输出结果
@@ -733,14 +871,17 @@ test('风险词带义项：给义项不给译法，这是词典映射和放任�
     targetLang: '简体中文',
     profile: withSense
   });
-  assert.ok(system.includes('here means: 画面卡顿掉帧'), '义项没有进入 prompt');
+  assert.ok(system.includes('candidate sense: 画面卡顿掉帧'), '候选义项没有进入 prompt');
+  assert.ok(system.includes('ignore or revise a note when the local evidence calls for another sense'));
+  assert.ok(system.includes('A note may fit some occurrences and not others'));
+  assert.ok(!system.includes('SENSE is fixed'));
   assert.ok(system.includes('shell → ambiguous here'), '没写义项的词应当退回"按句判断"');
   // 关键约束：义项段里绝不能出现目标语言译法映射
   const seg = system.split('CONTEXT-SENSITIVE WORDS')[1].split('\n\n')[0];
   assert.ok(!/=/.test(seg), '风险词段出现了固定映射，会重演 stuttering→口吃');
 });
 
-test('领域不只是陈述，要带上"领域义压过日常义"的指令', () => {
+test('领域提供线索，但不能覆盖原句或排除日常义', () => {
   const { system } = buildMessages({
     items: [{ i: 1, text: 'x' }],
     presetId: 'technical',
@@ -748,10 +889,9 @@ test('领域不只是陈述，要带上"领域义压过日常义"的指令', () 
     profile: fromYaml('领域: Wayland, Linux 图形栈')
   });
   assert.ok(system.includes('Wayland'), '领域没有进入 prompt');
-  assert.ok(
-    /domain-specific sense .* over its everyday sense/.test(system),
-    '只说了领域是什么，没说拿它干什么——这样的领域行没有约束力'
-  );
+  assert.ok(system.includes('source sentence and neighboring context determine the meaning of each occurrence'));
+  assert.ok(system.includes('an everyday sense may be appropriate even on a technical page'));
+  assert.ok(!/always take|Never fall back to the everyday|SENSE is fixed/.test(system));
 });
 
 test('规则合并：用户写的压过模型猜的，冲突项自动清理', () => {
@@ -928,7 +1068,7 @@ test('页面分类：域名表、站点规则、结构特征', () => {
 /* ------------------------------------------------------------------ */
 
 mount('<body></body>'); // 先给模块一个可用的 document
-({ scan, resetIds, collectPageContext } = await import('../src/content/extractor.js'));
+({ scan, resetIds, collectPageContext, inspectExtraction } = await import('../src/content/extractor.js'));
 ({ attach, fill, applyPresentation, removeAll } = await import('../src/content/renderer.js'));
 ({ listProviders } = await import('../src/shared/provider-catalog.js'));
 ({ buildChunks } = await import('../src/content/chunker.js'));
@@ -947,6 +1087,23 @@ fab = await import('../src/content/float-widget.js');
 ({ Queue } = await import('../src/background/queue.js'));
 
 let failed = 0;
+test('布局拒绝规则的样例矩阵保持一致', () => {
+  for (const style of ['', 'white-space:nowrap', 'white-space:pre', 'text-overflow:ellipsis', 'position:fixed', 'position:sticky']) {
+    const doc = mount(`<article><p style="${style}">This paragraph contains a complete sentence for translation.</p></article>`);
+    const units = scan(doc.body, { ...LOOSE, skipTightLayout: true });
+    assert.equal(units.length, style ? 0 : 1, style);
+  }
+});
+
+test('只读正文快照既不占用 ID，也不修改 DOM', () => {
+  const doc = mount('<article><p>Some source content to translate.</p></article>');
+  const before = doc.body.innerHTML;
+  const first = scan(doc.body, LOOSE)[0];
+  for (let i = 0; i < 5; i++) assert.equal(scan(doc.body, LOOSE, { snapshot: true })[0].id, 0);
+  assert.equal(scan(doc.body, LOOSE)[0].id, first.id + 1);
+  assert.equal(doc.body.innerHTML, before);
+});
+
 for (const [name, fn] of cases) {
   try {
     await fn();

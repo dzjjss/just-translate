@@ -6,134 +6,30 @@ import {
   buildRuleMessages,
   extractJsonObject,
   parsePreflightProfile,
-  parseTranslationResponse,
-  promptFingerprint
+  parseTranslationResponse
 } from '../prompt/build.js';
 import { normalizeRules, toYaml } from '../shared/rules-yaml.js';
 import { getProvider, wireFor } from './providers/index.js';
 import { Queue, withRetry } from './queue.js';
-import { cacheKey, getCached, initCache, putCached } from './cache.js';
+import { initCache, flush, cacheGeneration } from './cache.js';
+import { preflightCacheKey, readPreflightCache, writePreflightCache, beginPreflightCache } from './preflight-cache.js';
+import { createTranslationCachePolicy, machineBatchCacheItems, createLLMCachePlan, readLLMCache, writeLLMCache } from './translation-cache.js';
+export { createTranslationCachePolicy, machineBatchCacheItems, canUsePerItemCache, wholePageCacheItems, lookupWholePageCache } from './translation-cache.js';
 import { filterChatModels, parseModelList } from '../shared/provider-help.js';
 import { hashString } from '../shared/hash.js';
 import { resolveMachineTarget } from '../shared/machine-languages.js';
 import { translateMachineWithRecovery } from './machine-translation.js';
+import { isUsableTranslation } from '../shared/translation-result.js';
+import { createExecution } from './execution.js';
+export { isUsableTranslation } from '../shared/translation-result.js';
+import { sessionSignal as signalFor } from './sessions.js';
+export { abortSession, abortTab, openSession } from './sessions.js';
 
-/**
- * 翻译缓存的唯一策略层。
- *
- * 缓存只负责“相同翻译语义 + 相同原文 → 复用译文”。它不再参与术语生命周期，
- * 不恢复页面状态，也不做 alias / provenance / fixed-point。
- */
-export function createTranslationCachePolicy({ settings, fingerprint }) {
-  const keyFor = (text) =>
-    cacheKey({
-      providerId: settings.providerId,
-      endpoint: settings.apiBase,
-      model: settings.model,
-      fingerprint,
-      text
-    });
-
-  function lookup(items) {
-    if (!settings.useCache) return { hits: new Map(), misses: [...items] };
-
-    const hits = new Map();
-    const misses = [];
-    for (const item of items) {
-      const translation = getCached(keyFor(item.text));
-      if (translation == null) misses.push(item);
-      else hits.set(item.i, { t: translation });
-    }
-    return { hits, misses };
-  }
-
-  function store(source, translation) {
-    if (!settings.useCache) return;
-    putCached(keyFor(source), translation);
-  }
-
-  return { lookup, store };
-}
-
-/** 整页上下文与逐条 cache hit 互斥：少任何一个 unit 都不再是同一个实验。 */
-export function canUsePerItemCache(settings, context = {}) {
-  return Boolean(settings?.useCache && !context?.wholePage);
-}
-
-/**
- * 整页缓存绑定“完整、有序的页面快照 + 当前单元位置”。
- * 同一句在不同位置可能因上下文得到不同译法，因此不能继续拿裸句子作整页缓存 key。
- */
-export function wholePageCacheItems(items) {
-  const list = Array.isArray(items) ? items : [];
-  const pageHash = hashString(JSON.stringify(list.map((item) => String(item?.text || ''))));
-  return list.map((item, index) => ({
-    i: item.i,
-    text: `whole-page:v1:${pageHash}:${index}:${String(item.text || '')}`
-  }));
-}
-
-/** 机器翻译的译法受同批正文与邻接语境影响，因此缓存也必须绑定完整批次快照。 */
-export function machineBatchCacheItems(items, context = {}) {
-  const list = Array.isArray(items) ? items : [];
-  const batchHash = hashString(JSON.stringify({
-    texts: list.map((item) => String(item?.text || '')),
-    context: String(context?.mtContext || ''),
-    wholePage: Boolean(context?.wholePage)
-  }));
-  return list.map((item, index) => ({
-    i: item.i,
-    text: `machine-batch:v1:${batchHash}:${index}:${String(item.text || '')}`
-  }));
-}
-
-/** 只有完整快照全命中才返回结果；partial hit 对调用方表现为一次普通 miss。 */
-export function lookupWholePageCache(cachePolicy, items) {
-  const cached = cachePolicy.lookup(wholePageCacheItems(items));
-  if (cached.misses.length) return null;
-  return items.map((item) => ({ i: item.i, t: cached.hits.get(item.i).t, cached: true }));
-}
 
 const queue = new Queue(3);
 
-/**
- * sessionId -> AbortController。
- * 一个 session 一个 signal，贯穿排队等待、退避 sleep、fetch、二分重试整条链路，
- * 所以点「停止」以后队列里还没发出的批次也不会再发出去。
- */
-const sessions = new Map();
-
 export function setConcurrency(n) {
   queue.setLimit(n);
-}
-
-function signalFor(sessionId) {
-  let ctrl = sessions.get(sessionId);
-  if (!ctrl) {
-    ctrl = new AbortController();
-    sessions.set(sessionId, ctrl);
-  }
-  return ctrl.signal;
-}
-
-/** 页面关掉或导航走了，这个 tab 名下所有 session 一律中止 */
-export function abortTab(tabId) {
-  let n = 0;
-  for (const key of [...sessions.keys()]) {
-    if (!key.startsWith(`${tabId}:`)) continue;
-    sessions.get(key).abort();
-    sessions.delete(key);
-    n++;
-  }
-  return n;
-}
-
-export function abortSession(sessionId) {
-  const ctrl = sessions.get(sessionId);
-  if (!ctrl) return false;
-  ctrl.abort();
-  sessions.delete(sessionId);
-  return true;
 }
 
 /**
@@ -141,104 +37,42 @@ export function abortSession(sessionId) {
  * items: [{ i, text }]
  * 返回 { items: [{i, t, cached}], failed: [i], usage }
  */
-export async function translateChunk({
-  items,
-  context,
-  settings,
-  sessionId,
-  bypassCache = false
-}) {
+export async function translateChunk({ items, context, settings, sessionId, bypassCache = false }) {
+  const signal = signalFor(sessionId);
   await initCache();
-
-  const presetId = context.presetId || settings.presetId;
-  // 背景在页面侧解析（站点规则可覆盖全局），这里只认解析结果
-  const background = context.background ?? settings.background ?? '';
-  const profile = context.profile || null;
+  signal.throwIfAborted();
   const provider = getProvider(settings.providerId);
   if (provider.kind === 'mt') {
     return translateMachineChunk({ items, context, settings, provider, sessionId, bypassCache });
   }
-  const fingerprint = promptFingerprint({
-    presetId,
-    customPrompt: settings.customPrompt,
-    targetLang: settings.targetLang,
-    background,
-    profile,
-    preflightSuggestions: context.preflightSuggestions || {},
-    semanticMemory: context.semanticMemory || [],
-    wholePage: Boolean(context.wholePage),
-    temperature: provider.omitTemperature ? null : LIMITS.TEMPERATURE
-  });
-  const cachePolicy = createTranslationCachePolicy({ settings, fingerprint });
-
-  const results = [];
-  let misses = [...items];
-  const wholePage = Boolean(context.wholePage);
   const runtime = {
-    translateRequestCount: 0,
-    splitRetryCount: 0,
-    wholePageCacheHit: false
+    translateRequestCount: 0, splitRetryCount: 0, wholePageCacheHit: false,
+    invalidResponseSplitCount: 0, invalidResponseFailedUnits: 0
   };
-
-  // 分块模式继续使用逐段缓存。整页模式只接受完整页面快照 100% 命中：
-  // 部分命中一律忽略并发送全文；完整成功后才写入这一页的全部单元。
-  const allowCache = canUsePerItemCache(settings, context);
-  const allowCacheStore = allowCache;
-
-  if (allowCache && !bypassCache) {
-    const cached = cachePolicy.lookup(items);
-    misses = cached.misses;
-    for (const item of items) {
-      const hit = cached.hits.get(item.i);
-      if (hit) results.push({ i: item.i, t: hit.t, cached: true });
-    }
-  } else if (wholePage && settings.useCache && !bypassCache) {
-    const cachedItems = lookupWholePageCache(cachePolicy, items);
-    if (cachedItems) {
-      runtime.wholePageCacheHit = true;
-      return {
-        items: cachedItems,
-        failed: [],
-        usage: null,
-        runtime
-      };
-    }
+  const plan = createLLMCachePlan(items, context, settings, provider);
+  const cached = readLLMCache(plan, items, bypassCache, runtime);
+  if (!cached.misses.length) return { items: cached.items, failed: [], usage: null, runtime };
+  const execution = createExecution(signal, runtime);
+  let translated;
+  try {
+    translated = await requestWithSplit({
+      items: cached.misses, context: plan.context, settings,
+      signal: execution.signal, execution, runtime, depth: 0
+    });
+  } catch (error) {
+    error.runtime = { ...runtime };
+    error.usage = execution.usage;
+    error.usageIncomplete = execution.usageIncomplete;
+    throw error;
   }
-
-  if (!misses.length) {
-    return { items: results, failed: [], usage: null, runtime };
-  }
-
-  const signal = signalFor(sessionId);
-  const usageAcc = { input: 0, output: 0 };
-  const { items: fresh, failed } = await requestWithSplit({
-    items: misses,
-    context: { ...context, presetId, background },
-    settings,
-    signal,
-    usageAcc,
-    runtime,
-    depth: 0
-  });
-
-  const freshById = new Map(fresh.map((item) => [item.i, item]));
-  for (const r of fresh) {
-    if (allowCacheStore) cachePolicy.store(r.source, r.t);
-    results.push({ i: r.i, t: r.t, a: r.a || null, cached: false });
-  }
-
-  if (wholePage && settings.useCache && !failed.length && fresh.length === items.length) {
-    for (const virtual of wholePageCacheItems(items)) {
-      const translated = freshById.get(virtual.i);
-      if (translated) cachePolicy.store(virtual.text, translated.t);
-    }
-  }
-
+  const { items: fresh, failed } = translated;
+  runtime.recoveredContext = runtime.splitRetryCount > 0;
+  writeLLMCache(plan, items, fresh, failed, runtime.recoveredContext);
   return {
-    items: results,
-    failed,
-    usage: usageAcc.input || usageAcc.output ? usageAcc : null,
-    runtime
+    items: [...cached.items, ...fresh.map(item => ({ i: item.i, t: item.t, a: item.a || null, cached: false }))],
+    failed, usage: execution.usage,
+    error: execution.failure || (runtime.sourceLimitFailedUnits ? { message: '部分原文超过单次请求硬上限', status: 0 } : null),
+    usageIncomplete: execution.usageIncomplete, runtime
   };
 }
 
@@ -264,6 +98,7 @@ async function translateMachineChunk({ items, context, settings, provider, sessi
     const cached = cachePolicy.lookup(virtualItems);
     if (!cached.misses.length) {
       runtime.wholePageCacheHit = Boolean(context?.wholePage);
+      runtime.recoveredContext = [...cached.hits.values()].some(item => item.contextScope === 'recovered');
       return {
         items: items.map((item) => ({ i: item.i, t: cached.hits.get(item.i).t, cached: true })),
         failed: [],
@@ -275,55 +110,56 @@ async function translateMachineChunk({ items, context, settings, provider, sessi
 
   const signal = signalFor(sessionId);
   runtime.machineContextChars = String(context?.mtContext || '').length;
+  const execution = createExecution(signal, runtime);
   const request = (text, depth = 0) =>
     queue.add(
       () =>
         withRetry(
-          async () => {
-            runtime.translateRequestCount++;
-            if (depth > 0) runtime.splitRetryCount++;
+          async (_attempt, retryError) => {
+            if (text.length > LIMITS.MAX_REQUEST_SOURCE_CHARS) throw new Error('原文超过单次请求硬上限');
+            execution.attempt(depth, depth ? 'boundary-or-length-recovery' : 'initial', retryError);
             const res = await wire.translate({
               base: settings.apiBase,
               text,
               targetLang,
-              signal: AbortSignal.any([signal, AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS)])
+              signal: AbortSignal.any([execution.signal, AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS)])
             });
             return res.text;
           },
-          { signal, onRetry: (n, e, ms) => log(`机器翻译重试第 ${n} 次（${e.message}），${ms | 0}ms 后`) }
+          { signal: execution.signal, onRetry: (n, e, ms) => log(`机器翻译重试第 ${n} 次（${e.message}），${ms | 0}ms 后`) }
         ),
-      signal
+      execution.signal
     );
 
-  const translated = await translateMachineWithRecovery({
-    items,
-    context: String(context?.mtContext || ''),
-    request,
-    runtime
-  });
+  let translated;
+  try {
+    translated = await translateMachineWithRecovery({
+      items, context: String(context?.mtContext || ''), request,
+      targetLang: settings.targetLang, runtime
+    });
+    signal.throwIfAborted();
+  } catch (error) {
+    error.runtime = runtime;
+    error.usageIncomplete = execution.usageIncomplete;
+    throw error;
+  }
+  runtime.recoveredContext = runtime.splitRetryCount > 0;
 
   const byId = new Map(translated.items.map((item) => [item.i, item]));
   if (settings.useCache && !translated.failed.length && translated.items.length === items.length) {
     for (const virtual of virtualItems) {
       const hit = byId.get(virtual.i);
-      if (hit) cachePolicy.store(virtual.text, hit.t);
+      if (hit) cachePolicy.store(virtual.text, hit.t, runtime.splitRetryCount ? 'recovered' : 'batch');
     }
   }
 
   return {
     items: translated.items.map((item) => ({ i: item.i, t: item.t, cached: false })),
     failed: translated.failed,
+    error: translated.error,
     usage: null,
+    usageIncomplete: execution.usageIncomplete,
     runtime
-  };
-}
-
-/** 各家 usage 字段名不同，压成统一形状 */
-function normalizeUsage(u) {
-  if (!u) return null;
-  return {
-    input: u.prompt_tokens ?? u.input_tokens ?? 0,
-    output: u.completion_tokens ?? u.output_tokens ?? 0
   };
 }
 
@@ -331,148 +167,173 @@ function normalizeUsage(u) {
  * 一次模型调用。模型漏条目通常是批太大导致的，所以把缺失的部分对半切开重试。
  * 两个 half 都要跑完再汇总失败清单 —— 早退会让后一半永远没机会。
  */
-async function requestWithSplit({ items, context, settings, signal, usageAcc, runtime, depth }) {
-  const provider = getProvider(settings.providerId);
-  const wire = wireFor(provider);
-  const ids = items.map((it) => it.i);
-
-  const { system, user } = buildMessages({
-    items: items.map((it) => ({ i: it.i, text: it.text })),
-    context,
-    presetId: context.presetId,
-    targetLang: settings.targetLang,
-    customPrompt: settings.customPrompt,
-    background: context.background,
-    profile: context.profile || null,
-    preflightSuggestions: context.preflightSuggestions || {},
-    trackedTerms: context.trackedTerms || [],
-    semanticMemory: context.semanticMemory || [],
-    // 只有第一次完整请求能声称“看到了整页”；漏项后的二分补偿是普通局部批次。
-    wholePage: Boolean(context.wholePage && depth === 0)
-  });
-
-  log('system prompt →\n' + system);
-
-  // 调用与解析放在同一个重试单元里：返回空内容或不可解析的 JSON 都值得再试一次
-  const parsed = await queue.add(
-    () =>
-      withRetry(
-        async () => {
-          if (runtime) {
-            runtime.translateRequestCount++;
-            if (depth > 0) runtime.splitRetryCount++;
-          }
-          const res = await wire.complete({
-            base: settings.apiBase,
-            apiKey: settings.apiKey,
-            model: settings.model,
-            system,
-            user,
-            temperature: provider.omitTemperature ? undefined : LIMITS.TEMPERATURE,
-            extraBody: provider.extraBody,
-            auth: provider.auth,
-            extraQuery: provider.extraQuery,
-            extraHeaders: provider.extraHeaders,
-            signal: AbortSignal.any([signal, AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS)])
-          });
-          const nu = normalizeUsage(res.usage);
-          if (nu && usageAcc) {
-            usageAcc.input += nu.input;
-            usageAcc.output += nu.output;
-          }
-          const out = parseTranslationResponse(res.text, ids);
-          if (!out.parsed) {
-            const err = new Error('模型没有返回可解析的 JSON');
-            err.retryable = true;
-            err.body = String(res.text).slice(0, 200);
-            throw err;
-          }
-          return out;
-        },
-        { signal, onRetry: (n, e, ms) => log(`重试第 ${n} 次（${e.message}），${ms | 0}ms 后`) }
-      ),
-    signal
-  );
-
+async function requestWithSplit(args) {
+  const { items, settings, depth, execution } = args;
+  if (execution.failure) return { items: [], failed: items.map(item => item.i) };
+  let parsed;
+  try { parsed = await requestTranslation(args); }
+  catch (error) { return recoverInvalid(args, error); }
   const out = [];
-  for (const it of items) {
-    const t = parsed.map.get(it.i);
-    if (typeof t === 'string' && t.trim()) {
-      out.push({ i: it.i, t, a: parsed.alignments?.get(it.i) || null, source: it.text });
-    }
+  const missing = [];
+  for (const item of items) {
+    const text = parsed.map.get(item.i);
+    if (isUsableTranslation(item.text, text, settings.targetLang)) {
+      out.push({ i: item.i, t: text, a: parsed.alignments.get(item.i) || null, source: item.text });
+    } else missing.push(item);
   }
+  if (!missing.length || depth >= 2) return { items: out, failed: missing.map(item => item.i) };
+  const recovered = await splitRequest({ ...args, items: missing, requestReason: 'missing-items' });
+  return { items: [...out, ...recovered.items], failed: recovered.failed };
+}
 
-  const missing = items.filter((it) => parsed.missing.includes(it.i));
-  if (!missing.length) return { items: out, failed: [] };
-
-  if (depth >= 2 || missing.length <= 1) {
-    return { items: out, failed: missing.map((it) => it.i) };
-  }
-
-  const mid = Math.ceil(missing.length / 2);
+async function splitRequest(args) {
+  const mid = Math.ceil(args.items.length / 2);
+  const out = [];
   const failed = [];
-  for (const half of [missing.slice(0, mid), missing.slice(mid)]) {
-    if (!half.length) continue;
-    const sub = await requestWithSplit({
-      items: half,
-      context,
-      settings,
-      signal,
-      usageAcc,
-      runtime,
-      depth: depth + 1
-    });
-    out.push(...sub.items);
-    failed.push(...sub.failed);
+  for (const items of [args.items.slice(0, mid), args.items.slice(mid)]) {
+    if (!items.length) continue;
+    const result = await requestWithSplit({ ...args, items, depth: args.depth + 1 });
+    out.push(...result.items);
+    failed.push(...result.failed);
   }
   return { items: out, failed };
 }
 
+async function recoverInvalid(args, error) {
+  const { execution, items, depth, runtime } = args;
+  if (execution.cancelled) throw error;
+  if (!error.recoverBySplit) {
+    execution.fail(error);
+    return { items: [], failed: items.map(item => item.i) };
+  }
+  if (depth >= 2 || items.length <= 1) {
+    const key = error.code === 'source-limit' ? 'sourceLimitFailedUnits' : 'invalidResponseFailedUnits';
+    runtime[key] = (runtime[key] || 0) + items.length;
+    return { items: [], failed: items.map(item => item.i) };
+  }
+  runtime.invalidResponseSplitCount++;
+  return splitRequest({ ...args, invalidResponseRecovery: true,
+    requestReason: error.code === 'source-limit' ? 'source-limit'
+      : [400, 413].includes(error.status) ? 'context-length' : 'invalid-response' });
+}
+
+function translationMessages({ items, context, settings, depth }) {
+  return buildMessages({
+    items, context, presetId: context.presetId, targetLang: settings.targetLang,
+    customPrompt: settings.customPrompt, background: context.background,
+    profile: context.profile || null, preflightSuggestions: context.preflightSuggestions || {},
+    trackedTerms: context.trackedTerms || [], semanticMemory: context.semanticMemory || [],
+    wholePage: Boolean(context.wholePage && depth === 0)
+  });
+}
+
+async function requestTranslation(args) {
+  const { items, settings, signal, execution, depth, invalidResponseRecovery = false } = args;
+  if (items.reduce((sum, item) => sum + item.text.length, 0) > LIMITS.MAX_REQUEST_SOURCE_CHARS) {
+    throw Object.assign(new Error('原文超过单次请求硬上限'), { recoverBySplit: true, code: 'source-limit' });
+  }
+  const provider = getProvider(settings.providerId);
+  const wire = wireFor(provider);
+  const { system, user } = translationMessages(args);
+  if (system.length + user.length > LIMITS.MAX_COMPILED_REQUEST_CHARS) throw new Error('Prompt 与原文超过请求硬上限，请缩短自定义规则');
+  return queue.add(() => withRetry(async (_attempt, retryError) => {
+    const response = await wire.complete({
+      base: settings.apiBase, apiKey: settings.apiKey, model: settings.model, system, user,
+      temperature: provider.omitTemperature ? undefined : LIMITS.TEMPERATURE,
+      extraBody: provider.extraBody, auth: provider.auth, extraQuery: provider.extraQuery,
+      extraHeaders: provider.extraHeaders,
+      onAttempt: (reason = 'initial') => execution.attempt(depth,
+        reason === 'initial' ? (args.requestReason || 'initial') : reason, retryError),
+      onUsage: execution.observeUsage,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS)])
+    });
+    const parsed = parseTranslationResponse(response.text, items.map(item => item.i));
+    if (!parsed.parsed) throw Object.assign(new Error('模型没有返回可解析的 JSON'), { retryable: true, recoverBySplit: true });
+    return parsed;
+  }, { retries: invalidResponseRecovery ? 0 : LIMITS.MAX_RETRIES, signal }), signal);
+}
+
+
 /** 翻译预检：整页摘要一次调用，产出文档画像 */
-export async function runPreflight({ digest, context, settings, sessionId }) {
+export async function runPreflight(args) {
+  const signal = signalFor(args.sessionId);
+  await initCache();
+  signal.throwIfAborted();
+  const key = args.settings.useCache ? preflightCacheKey(args) : null;
+  const cached = !args.force && readPreflightCache(key);
+  if (cached) return cached;
+  const generation = cacheGeneration();
+  const requestId = beginPreflightCache(key);
+  const result = await requestPreflight(args);
+  try {
+    signal.throwIfAborted();
+    writePreflightCache(key, result.profile, generation, requestId);
+    // Persist before answering: a page refresh must not race the debounced write.
+    await flush();
+    signal.throwIfAborted();
+  } catch (error) {
+    Object.assign(error, { usage: result.usage, runtime: result.runtime, usageIncomplete: result.usageIncomplete });
+    throw error;
+  }
+  return { ...result, reused: false, cacheSource: 'fresh' };
+}
+
+async function requestPreflight({ digest, context, settings, sessionId }) {
   const provider = getProvider(settings.providerId);
   if (provider.kind === 'mt') throw new Error('免 Key 基础翻译不支持页面预检');
   const wire = wireFor(provider);
-  const signal = signalFor(sessionId);
+  const runtime = { translateRequestCount: 0, splitRetryCount: 0 };
+  const execution = createExecution(signalFor(sessionId), runtime);
+  const signal = execution.signal;
   const { system, user } = buildPreflightMessages({
     digest,
     context,
     targetLang: settings.targetLang
   });
-  const res = await queue.add(
-    () =>
-      withRetry(
-        async () => {
-          const r = await wire.complete({
-            base: settings.apiBase,
-            apiKey: settings.apiKey,
-            model: settings.model,
-            system,
-            user,
-            temperature: provider.omitTemperature ? undefined : 0,
-            extraBody: provider.extraBody,
-            auth: provider.auth,
-            extraQuery: provider.extraQuery,
-            extraHeaders: provider.extraHeaders,
-            signal: AbortSignal.any([signal, AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS)])
-          });
-          const profile = parsePreflightProfile(r.text);
-          if (!profile) {
-            // 解析不出、或者解析出来是空的，都不算成功 ——
-            // 谎报成功会让面板显示"已生成画像"却什么都没有
-            const err = new Error('预检没有得出任何规则');
-            err.retryable = true;
-            err.body = String(r.text).slice(0, 300);
-            throw err;
-          }
-          log('预检画像 →\n' + toYaml(profile));
-          return { profile, usage: normalizeUsage(r.usage) };
-        },
-        { signal }
-      ),
-    signal
-  );
-  return res;
+  try {
+    const res = await queue.add(
+      () =>
+        withRetry(
+          async (_attempt, retryError) => {
+            const r = await wire.complete({
+              onAttempt: (reason = 'initial') => execution.attempt(0, reason, retryError),
+              onUsage: execution.observeUsage,
+              responseFormat: 'text',
+              base: settings.apiBase,
+              apiKey: settings.apiKey,
+              model: settings.model,
+              system,
+              user,
+              temperature: provider.omitTemperature ? undefined : 0,
+              extraBody: provider.extraBody,
+              auth: provider.auth,
+              extraQuery: provider.extraQuery,
+              extraHeaders: provider.extraHeaders,
+              signal: AbortSignal.any([signal, AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS)])
+            });
+            const profile = parsePreflightProfile(r.text);
+            if (!profile) {
+              // 解析不出、或者解析出来是空的，都不算成功 ——
+              // 谎报成功会让面板显示"已生成画像"却什么都没有
+              const err = new Error('预检返回内容无法解析为有效规则');
+              err.retryable = true;
+              err.body = String(r.text).slice(0, 300);
+              throw err;
+            }
+            log('预检画像 →\n' + toYaml(profile));
+            return { profile };
+          },
+          { signal }
+        ),
+      signal
+    );
+    return { ...res, usage: execution.usage, usageIncomplete: execution.usageIncomplete, runtime };
+  } catch (error) {
+    error.usage = execution.usage;
+    error.usageIncomplete = execution.usageIncomplete;
+    error.runtime = runtime;
+    throw error;
+  }
 }
 
 /** 自然语言 → 结构化规则。返回可读文本，交给用户过目和手改。 */

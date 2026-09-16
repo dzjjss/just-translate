@@ -5,8 +5,10 @@ import { installRouter, handlers } from './router.js';
 import { setConcurrency, abortTab } from './translator.js';
 import { flush, initCache } from './cache.js';
 import { pingTab } from './injector.js';
+import { abortDisallowedSessions, workerEpoch } from './sessions.js';
+import { recordLifecycle } from './event-log.js';
+import { hasApiPermission } from '../shared/permissions.js';
 
-installRouter();
 
 /**
  * storage.local 默认对 content script 开放，而 API Key 就存在里面。
@@ -27,11 +29,17 @@ async function boot() {
   setDebug(s.debug);
   setConcurrency(s.concurrency);
   await initCache();
+  // Epoch changes show a restart; these records cannot determine its cause (idle, crash, etc.).
+  await recordLifecycle('worker-start', { epoch: workerEpoch,
+    version: chrome.runtime.getManifest?.().version || 'unknown' });
   log('service worker 就绪');
 }
-boot();
+const ready = boot();
+installRouter(ready);
 
+let broadcastGeneration = 0;
 onSettingsChanged(async (s) => {
+  const generation = ++broadcastGeneration;
   setDebug(s.debug);
   setConcurrency(s.concurrency);
   // 把新的运行时配置推给所有已注入的页面，不需要用户刷新
@@ -39,13 +47,15 @@ onSettingsChanged(async (s) => {
   for (const tab of tabs) {
     if (!tab.id) continue;
     if (!(await pingTab(tab.id))) continue;
+    if (generation !== broadcastGeneration) return;
     chrome.tabs
       .sendMessage(tab.id, { type: MSG.CONFIG_CHANGED, payload: { config: toRuntimeConfig(s) } })
       .catch(() => {});
   }
 });
 
-chrome.commands.onCommand.addListener(async (command) => {
+async function handleCommand(command) {
+  await ready;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
   if (command === 'translate-page') {
@@ -55,7 +65,8 @@ chrome.commands.onCommand.addListener(async (command) => {
   } else if (command === 'toggle-translations') {
     await handlers[MSG.TOGGLE_ON_TAB]({ tabId: tab.id });
   }
-});
+}
+chrome.commands.onCommand.addListener(command => handleCommand(command).catch(error => warn('快捷键执行失败：', error.message)));
 
 // 页面关闭或导航离开：中止这个 tab 还在飞和还在排队的请求。
 // BYO API 花的是用户自己的钱，关了页面还继续跑是不能接受的。
@@ -68,3 +79,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading') abortTab(tabId);
 });
 chrome.runtime.onSuspend?.addListener?.(() => flush());
+chrome.permissions.onRemoved?.addListener(() => {
+  void recordLifecycle('permission-removed', {});
+  void abortDisallowedSessions(settings => hasApiPermission(settings.apiBase));
+});

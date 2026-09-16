@@ -30,6 +30,7 @@ export default [
         AbortSignal: 'readonly',
         DOMException: 'readonly',
         Blob: 'readonly',
+        Response: 'readonly',
         URL: 'readonly',
         localStorage: 'readonly',
         navigator: 'readonly',
@@ -48,6 +49,7 @@ export default [
     rules: {
       // 这次真出过事的三条
       'no-dupe-keys': 'error',
+      'complexity': ['error', { max: 20, variant: 'classic' }],
       'no-unused-vars': ['error', { args: 'none', varsIgnorePattern: '^_' }],
       'no-undef': 'error',
       // 同类的低级失误，顺手一起拦

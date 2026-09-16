@@ -1,19 +1,22 @@
 {
   "name": "just-translate",
-  "version": "16.0.0",
+  "version": "0.17.7",
   "private": true,
   "description": "支持自带模型与免 Key 基础引擎的沉浸式双语网页翻译 Chrome 扩展（MV3，无打包器）",
   "type": "module",
   "scripts": {
     "lint": "eslint src test eslint.config.mjs",
-    "test:core": "node test/architecture.test.mjs && node test/core.test.mjs && node test/settings.test.mjs && node test/cache.test.mjs && node test/machine-translation.test.mjs && node test/term-consistency.test.mjs && node test/semantic-memory.test.mjs",
-    "test:dom": "node test/extractor.test.mjs && node test/content.test.mjs && node test/popup.test.mjs",
+    "test:core": "node test/architecture.test.mjs && node test/core.test.mjs && node test/settings.test.mjs && node test/cache.test.mjs && node test/diagnostics.test.mjs && node test/event-log.test.mjs && node test/machine-translation.test.mjs && node test/term-consistency.test.mjs && node test/semantic-memory.test.mjs && node test/robustness.test.mjs && node test/backend-lifecycle.test.mjs && node test/complexity.test.mjs && node test/connection.test.mjs && node test/preflight-cache.test.mjs && node test/restart.test.mjs && node test/state-inventory.test.mjs",
+    "test:dom": "node test/extractor.test.mjs && node test/shadow-dom.test.mjs && node test/content.test.mjs && node test/popup.test.mjs && node test/popup-settings.test.mjs && node test/language-ui.test.mjs && node test/action-feedback.test.mjs && node test/markdown-export.test.mjs && node test/popup-notice.test.mjs",
     "test": "npm run test:core && npm run test:dom",
-    "check": "npm run lint && npm test"
+    "test:layout": "node test/popup-layout.test.mjs && node test/extractor-browser.test.mjs && node test/popup-browser.test.mjs",
+    "check": "npm run lint && npm test",
+    "audit:state": "node scripts/state-inventory.mjs"
   },
   "devDependencies": {
     "eslint": "^9.0.0",
-    "jsdom": "^30.0.0"
+    "jsdom": "^30.0.0",
+    "playwright-core": "1.62.1"
   },
   "engines": {
     "node": ">=22.22.2"

@@ -34,9 +34,10 @@ export const anthropicWire = {
     return res.json();
   },
 
-  async complete({ base, apiKey, model, system, user, temperature, extraBody, auth, extraQuery, extraHeaders, signal }) {
+  async complete({ base, apiKey, model, system, user, temperature, extraBody, auth, extraQuery, extraHeaders, signal, onAttempt = () => {}, onUsage = () => {} }) {
     let url = joinUrl(base, 'messages');
     if (extraQuery) url += (url.includes('?') ? '&' : '?') + extraQuery;
+    onAttempt();
     const res = await fetch(url, {
       method: 'POST',
       signal,
@@ -54,8 +55,10 @@ export const anthropicWire = {
     if (!res.ok) throw await readError(res, url);
 
     const data = await res.json();
-    const text = (data?.content || [])
-      .filter((b) => b && b.type === 'text')
+    onUsage(data?.usage);
+    const blocks = Array.isArray(data?.content) ? data.content : [];
+    const text = blocks
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
       .map((b) => b.text)
       .join('');
     if (!text.trim()) {

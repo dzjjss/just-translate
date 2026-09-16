@@ -1,4 +1,10 @@
-import { isTranslationNode } from './renderer.js';
+import { isOwnNode, pageRoots } from './dom-roots.js';
+
+function relevantMutation(record) {
+  if (isOwnNode(record.target)) return false;
+  if (record.type !== 'childList') return true;
+  return [...record.addedNodes, ...record.removedNodes].some(node => !isOwnNode(node));
+}
 
 /**
  * 动态内容只有一条线：MutationObserver 负责"页面又长出新东西了"
@@ -10,43 +16,54 @@ import { isTranslationNode } from './renderer.js';
 
 export function createMutationWatcher(onDirty, { debounceMs = 400 } = {}) {
   let timer = null;
-  let running = false;
+  let events = null;
 
   const observer = new MutationObserver((records) => {
-    if (!running) return;
-    let relevant = false;
-    for (const r of records) {
-      if (r.type === 'characterData') {
-        relevant = true;
-        break;
-      }
-      for (const n of r.addedNodes) {
-        // 忽略我们自己插入的译文，否则会形成无限循环
-        if (isTranslationNode(n)) continue;
-        if (n.nodeType === Node.ELEMENT_NODE && n.closest?.('#byom-hud')) continue;
-        relevant = true;
-        break;
-      }
-      if (relevant) break;
-    }
-    if (!relevant) return;
-    clearTimeout(timer);
-    timer = setTimeout(onDirty, debounceMs);
+    if (records.some(relevantMutation)) schedule();
   });
+
+  function schedule() {
+    if (!events) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      observePage();
+      onDirty();
+    }, debounceMs);
+  }
+
+  function onInteraction(event) {
+    if (!isOwnNode(event.composedPath?.()[0] || event.target)) schedule();
+  }
+
+  function observePage() {
+    // 每次重扫重新绑定，移除的根随即释放；无需再养一个根集合。
+    observer.disconnect();
+    events?.abort();
+    events = new window.AbortController();
+    const options = { signal: events.signal };
+    for (const root of pageRoots(document.body)) {
+      observer.observe(root, {
+        childList: true, subtree: true, characterData: true, attributes: true,
+        attributeFilter: ['hidden', 'aria-hidden', 'class', 'style', 'translate', 'contenteditable', 'role', 'open', 'slot', 'name']
+      });
+      root.addEventListener('slotchange', onInteraction, options);
+    }
+    // attachShadow 本身不会发出 DOM mutation；交互和返回标签页提供额外发现机会。
+    document.addEventListener('click', onInteraction, { ...options, capture: true });
+    document.addEventListener('visibilitychange', onInteraction, options);
+  }
 
   return {
     start() {
-      running = true;
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        characterData: true
-      });
+      clearTimeout(timer);
+      observePage();
     },
     stop() {
-      running = false;
       clearTimeout(timer);
       observer.disconnect();
+      events?.abort();
+      events = null;
     }
   };
 }

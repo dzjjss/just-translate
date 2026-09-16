@@ -14,14 +14,18 @@ import { dirname, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const html = readFileSync(resolve(here, '../src/popup/popup.html'), 'utf8');
+const manifest = JSON.parse(readFileSync(resolve(here, '../manifest.json'), 'utf8'));
+const { copyAcceptanceLog } = await import('../src/popup/diagnostics.js');
 
 /* ------------------------------ chrome 桩 ------------------------------ */
 
 const sent = [];
+const tabSent = [];
 let stored = {};
 let permissionGranted = true;
 
 const chrome = {
+  i18n: { getUILanguage: () => 'zh-CN' },
   storage: {
     local: {
       async get(key) {
@@ -34,9 +38,13 @@ const chrome = {
     onChanged: { addListener() {} }
   },
   runtime: {
-    getManifest: () => ({ version: '16.0' }),
+    getManifest: () => manifest,
     async sendMessage(msg) {
       sent.push(msg);
+      if (msg.type === 'save-settings') {
+        const { persistSettingsPatch } = await import('../src/shared/settings.js');
+        return { ok: true, settings: await persistSettingsPatch(msg.payload.patch) };
+      }
       if (msg.type === 'preflight-on-tab') {
         return {
           ok: true,
@@ -44,6 +52,22 @@ const chrome = {
           profileYaml: '原则: 命令与参数原样保留，不做文学化润色\n领域: Wayland\n优先:\n  compositor: 合成器\n风险词:\n  output: 显示输出设备'
         };
       }
+      if (msg.type === 'get-lifecycle-log') {
+        if (lifecycleOverride) return { ok: true, lifecycle: lifecycleOverride };
+        return lifecycleFails ? { ok: false, error: { message: 'unavailable' } } : {
+          ok: true,
+          lifecycle: {
+            format: 'just-translate-lifecycle/v2', epoch: 'epoch-2', droppedBefore: 0, writeFailures: 0, eventCount: 4,
+            events: [
+              { n: 1, at: '2026-09-08T00:00:00.000Z', event: 'worker-start', details: { epoch: 'epoch-1' } },
+              { n: 2, at: '2026-09-08T00:01:00.000Z', event: 'translate-chunk', details: { unitCount: 8, requests: 1, wholePageCacheHit: false, failed: 0 } },
+              { n: 3, at: '2026-09-08T00:06:00.000Z', event: 'worker-start', details: { epoch: 'epoch-2' } },
+              { n: 4, at: '2026-09-08T00:07:00.000Z', event: 'translate-chunk', details: { unitCount: 8, requests: 0, wholePageCacheHit: true, failed: 0 } }
+            ]
+          }
+        };
+      }
+      if (msg.type === 'clear-lifecycle-log') return { ok: !lifecycleFails };
       if (msg.type === 'list-models') return { ok: true, ids: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'] };
       if (msg.type === 'get-config') return { ok: true, config: {} };
       if (msg.type === 'lab-translate') {
@@ -86,7 +110,23 @@ const chrome = {
     onRemoved: { addListener() {} }
   },
   tabs: {
-    async sendMessage() {
+    async sendMessage(tabId, msg) {
+      tabSent.push({ tabId, msg });
+      if (msg?.type === 'get-diagnostics') {
+        return {
+          ok: true,
+          diagnostic: {
+            format: 'just-translate-diagnostic/v1',
+            logId: 'page-session-7', throughSequence: 42,
+            generatedAt: '2026-08-30T00:00:00.000Z',
+            startedAt: '2026-08-30T00:00:00.000Z',
+            privacy: 'No secrets.',
+            translationRuntime: { translationMode: 'chunked', translateRequestCount: 3 },
+            eventCount: 1,
+            events: [{ n: 1, at: '2026-08-30T00:00:00.000Z', elapsedMs: 0, event: 'translate-error', details: { status: 429 } }]
+          }
+        };
+      }
       return { ok: true };
     }
   }
@@ -101,9 +141,12 @@ global.localStorage = dom.window.localStorage;
 global.chrome = chrome;
 dom.window.chrome = chrome;
 let copiedText = '';
+let clipboardFails = false;
+let lifecycleFails = false;
+let lifecycleOverride = null;
 Object.defineProperty(dom.window.navigator, 'clipboard', {
   configurable: true,
-  value: { async writeText(value) { copiedText = value; } }
+  value: { async writeText(value) { if (clipboardFails) throw new Error('clipboard denied'); copiedText = value; } }
 });
 Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
 
@@ -269,7 +312,7 @@ test('复制 Key 取当前输入框草稿，不要求先应用或显示明文', 
   await tick();
   assert.equal(copiedText, 'sk-unsaved-copy');
   assert.equal($('apiKey').type, 'password');
-  assert.equal($('copyApiKey').textContent, '已复制');
+  assert.equal($('copyApiKey').dataset.feedbackLabel, '已复制');
 });
 
 test('悬浮球位置行跟着开关显示', () => {
@@ -361,8 +404,11 @@ test('拉取模型把清单填进候选，不用去翻文档抄模型名', async
   await tick();
   await tick();
   await tick();
-  const opts = [...$('modelHints').options].map((o) => o.value);
-  assert.deepEqual(opts, ['gpt-4o', 'gpt-4o-mini', 'o3-mini']);
+  const opts = [...$('model').options].map((o) => o.value);
+  assert.equal($('model').tagName, 'SELECT');
+  assert.equal($('modelHints'), null);
+  for (const id of ['gpt-4o', 'gpt-4o-mini', 'o3-mini']) assert.ok(opts.includes(id));
+  assert.ok($('model').value, '拉取列表不能清除当前选择');
   assert.ok($('modelNote').textContent.includes('3 个模型'));
   assert.equal($('modelNote').dataset.tone, 'ok');
 });
@@ -396,6 +442,8 @@ test('页面语境只负责读，人工覆盖集中在页面规则', () => {
   assert.ok(context.contains($('rulesTree')), '自动语境的约束没有留在只读区');
   assert.ok(context.contains($('detected')));
   assert.ok(context.contains($('preflight')), '重新读取应当留在自动语境旁边');
+  assert.ok(context.contains($('copyProfile')), '完整语境复制应当留在页面语境旁边');
+  assert.equal($('copyProfile').closest('details'), null, '复制语境不应依赖展开详情');
   assert.ok(!context.contains($('background')), '背景输入框不该占着只读区');
   assert.ok(!context.contains($('rulesText')), '规则编辑框不该占着只读区');
   assert.ok(!context.contains($('presetId')), '页面类型的人工覆盖应当在页面规则');
@@ -407,6 +455,7 @@ test('页面语境只负责读，人工覆盖集中在页面规则', () => {
 
 test('fallback 是正常状态，不再显示“识别依据不足”警告', () => {
   paintDetectedForTest({ presetId: 'general', presetReason: 'fallback', hasProfile: false, profileYaml: '' });
+  assert.equal($('copyProfile').disabled, true, '没有画像时不能复制上一页的内容');
   assert.equal($('detected').dataset.tone, '', '默认兜底不应该被画成异常');
   assert.ok($('detected').textContent.includes('可以直接翻译'));
   assert.equal($('goCalibrate').hidden, false, '页面规则入口应当一直可用，但只是普通次级动作');
@@ -484,8 +533,10 @@ test('本地服务不强制填 Key', async () => {
 
   // 模型名仍然必填（得先 ollama pull 一个），但 Key 不该再拦人
   assert.equal($('go').disabled, true, '模型没填时本就该锁住');
-  $('model').value = 'qwen2.5:7b';
-  fire('model');
+  $('model').value = '__jt_custom_model__';
+  fire('model', 'change');
+  $('customModel').value = 'qwen2.5:7b';
+  fire('customModel');
   assert.equal($('go').disabled, false, '本地服务填了模型却因为没 Key 仍被锁住');
 
   $('providerId').value = 'openai';
@@ -496,11 +547,192 @@ test('本地服务不强制填 Key', async () => {
 
 test('维护操作已经降到工具与高级里，清理按钮仍各自说清范围', () => {
   const tools = document.querySelector('.settings-panel[data-panel="tools"]');
-  assert.ok(tools.contains($('resetAll')) && tools.contains($('clearCache')), '维护动作没有降到工具区');
+  assert.ok(tools.contains($('resetAll')) && tools.contains($('clearCache')) && tools.contains($('copyDiagnostics')), '维护动作没有降到工具区');
   assert.ok($('clearCache').textContent.includes('仅清缓存'), '仅清缓存的按钮文案不明确');
 });
 
-test('预检结果渲染成树，并可采纳为规则', async () => {
+test('一次性诊断从当前页读取、写入剪贴板后才清空，并补齐引擎与权限状态', async () => {
+  tabSent.length = 0;
+  copiedText = '';
+  $('copyDiagnostics').click();
+  await tick();
+  await tick();
+  await tick();
+
+  const copied = JSON.parse(copiedText);
+  assert.equal(copied.format, 'just-translate-diagnostic/v1');
+  assert.equal(copied.events[0].details.status, 429);
+  assert.equal(copied.translationRuntime.translateRequestCount, 3);
+  assert.ok(copied.engine.providerId);
+  assert.equal(typeof copied.panel.hasPermission, 'boolean');
+  assert.ok(!copiedText.includes('sk-unsaved-copy'), '诊断包泄漏了 API Key 草稿');
+  assert.deepEqual(tabSent.map((row) => row.msg.type), ['get-diagnostics', 'clear-diagnostics']);
+  assert.equal($('copyDiagnostics').dataset.feedbackLabel, '已复制');
+  assert.deepEqual(tabSent[1].msg.payload, { logId: 'page-session-7', throughSequence: 42 });
+});
+
+test('剪贴板写入失败时保留页面诊断日志，不发送清空消息', async () => {
+  tabSent.length = 0;
+  clipboardFails = true;
+  $('copyDiagnostics').click();
+  await tick();
+  await tick();
+  clipboardFails = false;
+  assert.deepEqual(tabSent.map((row) => row.msg.type), ['get-diagnostics']);
+});
+
+test('验收日志把后台生命周期和页面日志合成一份，且两侧都不清空', async () => {
+  tabSent.length = 0;
+  copiedText = '';
+  $('copyAcceptance').click();
+  await tick();
+  await tick();
+  await tick();
+  const bundle = JSON.parse(copiedText);
+  assert.equal(bundle.format, 'just-translate-acceptance/v2');
+  assert.equal(bundle.background.eventCount, 4);
+  assert.equal(bundle.pageDiagnostic.logId, 'page-session-7');
+  assert.equal(bundle.acceptance.workerStarts, 2);
+  assert.equal(bundle.acceptance.workerRestartObserved, true, '不同代次证明后台重启过，但不能确定原因');
+  assert.ok(bundle.engine.providerId && typeof bundle.panel.hasPermission === 'boolean');
+  assert.ok(!copiedText.includes('sk-unsaved-copy'), '验收日志泄漏了 API Key 草稿');
+  assert.deepEqual(tabSent.map((row) => row.msg.type), ['get-diagnostics'], '复制验收日志不得清空页面日志');
+  assert.deepEqual(tabSent[0].msg.payload, { passive: true }, '验收读取必须是被动的，不能往页面日志里记导出事件');
+  assert.equal($('copyAcceptance').dataset.feedbackLabel, '已复制', '工具区在设置视图里，反馈必须落在按钮自身');
+  assert.ok($('status').textContent.includes('后台 4 条'));
+});
+
+test('摘要把整段日志和当前页面会话分开，缓存命中不被最后一次重翻盖掉', async () => {
+  copiedText = '';
+  $('copyAcceptance').click();
+  await tick();
+  await tick();
+  await tick();
+  const { logWindow, currentPage } = JSON.parse(copiedText).acceptance;
+  assert.equal(logWindow.translateChunks, 2);
+  assert.equal(logWindow.cacheHitChunks, 1, '整段日志里发生过的缓存命中必须能看到');
+  assert.equal(logWindow.providerRequests, 1);
+  assert.equal(logWindow.failedUnits, 0);
+  assert.equal(currentPage.wholePageCacheHit, null, '当前页面缺失这个字段，不能当作未命中');
+  assert.equal(currentPage.translateRequestCount, 3, '页面侧运行时统计应直接可读');
+});
+
+test('后台日志取不到时仍复制页面部分，并如实标记缺失', async () => {
+  lifecycleFails = true;
+  copiedText = '';
+  $('copyAcceptance').click();
+  await tick();
+  await tick();
+  await tick();
+  const bundle = JSON.parse(copiedText);
+  assert.deepEqual(bundle.background, { unavailable: true });
+  assert.equal(bundle.acceptance.workerStarts, null);
+  assert.equal(bundle.acceptance.workerRestartObserved, null);
+  assert.equal(bundle.acceptance.logWindow.translateChunks, null);
+  assert.equal(bundle.acceptance.logWindow.providerRequests, null);
+  assert.equal(bundle.acceptance.logWindow.incomplete, true);
+  assert.equal($('copyAcceptance').dataset.feedbackLabel, '已复制');
+  $('clearAcceptance').click();
+  await tick();
+  assert.equal($('clearAcceptance').dataset.feedbackLabel, '清空失败', '清空失败必须明说，不能谎称已清空');
+  assert.ok($('status').textContent.includes('清空失败'));
+  lifecycleFails = false;
+  $('clearAcceptance').click();
+  await tick();
+  assert.equal($('clearAcceptance').dataset.feedbackLabel, '已清空');
+  assert.ok($('status').textContent.includes('已清空'));
+});
+
+test('验收摘要使用清空起点识别一次重启，缺失或截断证据不报告确定的否定', async () => {
+  const anchor = { event: 'capture-start', details: { epoch: 'a' } };
+  const inspect = async (events, meta = {}) => {
+    lifecycleOverride = { epoch: 'a', events, eventCount: events.length, droppedBefore: 0, writeFailures: 0, ...meta };
+    await copyAcceptanceLog({ saved: {}, tab: {} });
+    return JSON.parse(copiedText).acceptance;
+  };
+  try {
+    assert.equal((await inspect([anchor])).workerRestartObserved, false);
+    const restarted = await inspect([anchor, { event: 'worker-start', details: { epoch: 'b' } }], { epoch: 'b' });
+    assert.equal(restarted.workerStarts, 1);
+    assert.equal(restarted.workerRestartObserved, true);
+    assert.equal((await inspect([])).workerRestartObserved, null);
+    for (const meta of [{ droppedBefore: 1 }, { writeFailures: 1 }, { unavailable: true }]) {
+      const summary = await inspect([anchor], meta);
+      assert.equal(summary.workerRestartObserved, null);
+      assert.equal(summary.logWindow.providerRequests, null);
+      assert.equal(summary.logWindow.incomplete, true);
+    }
+    assert.equal((await inspect([anchor], { epoch: 'b', droppedBefore: 1 })).workerRestartObserved, true,
+      '即使日志不完整，已存在的不同代次仍是正面证据');
+  } finally { lifecycleOverride = null; }
+});
+
+test('验收请求总数包含失败请求和预检，未知统计不得补零', async () => {
+  const events = [
+    { event: 'capture-start', details: { epoch: 'a' } },
+    { event: 'translate-chunk', details: { requests: 0, failed: 0, wholePageCacheHit: true } },
+    { event: 'translate-failed', details: { requests: 1, failureCategory: 'aborted' } },
+    { event: 'preflight', details: { requests: 1, cacheSource: 'fresh' } },
+    { event: 'preflight', details: { requests: 0, cacheSource: 'background-cache' } },
+    { event: 'preflight-failed', details: { requests: 2, failureCategory: 'network' } }
+  ];
+  lifecycleOverride = { epoch: 'a', events, eventCount: events.length, droppedBefore: 0, writeFailures: 0 };
+  try {
+    await copyAcceptanceLog({ saved: {}, tab: {} });
+    const { logWindow, currentPage } = JSON.parse(copiedText).acceptance;
+    assert.equal(logWindow.translationRequests, 1);
+    assert.equal(logWindow.preflightRequests, 3);
+    assert.equal(logWindow.providerRequests, 4);
+    assert.equal(logWindow.cacheHitChunks, 1);
+    assert.equal(logWindow.failedUnits, null, '取消时未报告失败单元数，不能补为零');
+    assert.deepEqual(logWindow.failureCategories, ['aborted', 'network']);
+    assert.equal(currentPage.translateRequestCount, null);
+    delete events[2].details.requests;
+    await copyAcceptanceLog({ saved: {}, tab: {} });
+    assert.equal(JSON.parse(copiedText).acceptance.logWindow.providerRequests, null,
+      '旧格式失败事件没有请求数，合计必须标未知');
+  } finally { lifecycleOverride = null; }
+});
+
+test('连续点击的按钮反馈按最后一次操作计时，旧定时器不能提前恢复文字', async () => {
+  const timeout = globalThis.setTimeout;
+  const cancel = globalThis.clearTimeout;
+  const timers = new Map();
+  let now = 0;
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    if (ms !== 2400) return timeout(fn, ms, ...args);
+    const id = {};
+    timers.set(id, { at: now + ms, fn, args });
+    return id;
+  };
+  globalThis.clearTimeout = id => { if (!timers.delete(id)) cancel(id); };
+  const advance = time => {
+    now = time;
+    for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.fn(...timer.args); }
+  };
+  try {
+    $('copyAcceptance').click();
+    await tick(); await tick();
+    advance(1500);
+    clipboardFails = true;
+    $('copyAcceptance').click();
+    await tick(); await tick();
+    assert.equal($('copyAcceptance').dataset.feedbackLabel, '复制失败');
+    advance(1600);
+    assert.equal($('copyAcceptance').dataset.feedbackLabel, '复制失败', '第一次点击的计时器不得盖掉第二次反馈');
+    advance(3900);
+    assert.equal($('copyAcceptance').dataset.feedback, undefined);
+    assert.equal($('copyAcceptance').textContent, '复制验收日志');
+    assert.equal(timers.size, 0);
+  } finally {
+    advance(10000);
+    clipboardFails = false;
+    globalThis.setTimeout = timeout;
+    globalThis.clearTimeout = cancel;
+  }
+});
+
+test('预检结果可完整复制到剪贴板，并可单独采纳为规则', async () => {
   // 大纲区显示的是"合并后真正生效的那一份"，所以在预检之前
   // 只要用户已经写了规则，它就该出现——这不是画像专属的展示区
   $('preflight').click();
@@ -518,6 +750,32 @@ test('预检结果渲染成树，并可采纳为规则', async () => {
 
   // 采纳是显式动作：倒进规则框后优先级从"模型猜的"升到"人定的"
   const before = $('rulesText').value;
+  const applied = $('applyRules').disabled;
+  const storedBefore = JSON.stringify(stored);
+  const messagesBefore = [sent.length, tabSent.length];
+  const expected = '原则: 命令与参数原样保留，不做文学化润色\n领域: Wayland\n优先:\n  compositor: 合成器\n风险词:\n  output: 显示输出设备';
+  assert.equal($('copyProfile').disabled, false);
+  $('copyProfile').click();
+  await tick();
+  assert.equal(copiedText, expected, '应复制完整自动画像，不混入用户规则或 HTML');
+  assert.equal($('rulesText').value, before, '复制不能修改规则草稿');
+  assert.equal($('applyRules').disabled, applied, '复制不能改变待应用状态');
+  assert.equal(JSON.stringify(stored), storedBefore, '复制不能持久化设置');
+  assert.deepEqual([sent.length, tabSent.length], messagesBefore, '复制不能触发预检或修改页面');
+
+  clipboardFails = true;
+  try {
+    $('copyProfile').click();
+    await tick();
+    assert.ok($('status').textContent.includes('复制失败'));
+    assert.equal($('copyProfile').disabled, false, '复制失败后应允许重试');
+  } finally {
+    clipboardFails = false;
+  }
+  $('copyProfile').click();
+  await tick();
+  assert.equal(copiedText, expected, '复制失败不能丢失原画像');
+
   $('adoptProfile').click();
   assert.notEqual($('rulesText').value, before, '采纳后规则框没有变化');
   assert.ok($('rulesText').value.includes('compositor: 合成器'));
@@ -527,7 +785,7 @@ test('预检结果渲染成树，并可采纳为规则', async () => {
 test('临时翻译和性能参数都降级到工具与高级，不再占一级入口', () => {
   const tools = document.querySelector('.settings-panel[data-panel="tools"]');
   assert.ok(tools.contains($('labInput')) && tools.contains($('concurrency')) && tools.contains($('debug')));
-  assert.equal(document.querySelectorAll('.settings-panel[data-panel="tools"] details').length, 0, '高级页不应再套子菜单');
+  assert.equal(document.querySelectorAll('.settings-panel[data-panel="tools"] details button, .settings-panel[data-panel="tools"] details input').length, 0, '高级页动作不应藏进子菜单，说明文字可以折叠');
 });
 
 test('试译台自动带上页面里双击过的那段原文', () => {
@@ -553,7 +811,7 @@ test('工具里的临时翻译仍带上本页语境', async () => {
 test('面板显著位置显示版本号，方便横向对比不同版本的译文', () => {
   const el = $('ver');
   assert.ok(el, '缺少版本号元素');
-  assert.equal(el.textContent, 'v16.0', '版本号应取自 manifest');
+  assert.equal(el.textContent, `v${manifest.version}`, '版本号应取自 manifest');
   assert.ok(el.closest('header'), '版本号应在页头，而不是藏在折叠区里');
 });
 
@@ -562,7 +820,360 @@ test('站点规则可以勾选打开即翻', () => {
   assert.equal($('siteAuto').checked, false);
 });
 
+test('应用期间继续编辑规则，回执后按钮仍可应用新草稿', async () => {
+  const original = chrome.runtime.sendMessage;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  chrome.runtime.sendMessage = async msg => {
+    const result = await original(msg);
+    if (msg.type === 'save-settings') await gate;
+    return result;
+  };
+  try {
+    $('rulesText').value = '领域: Linux';
+    fire('rulesText');
+    $('applyRules').click();
+    await tick();
+    $('rulesText').value = '领域: Wayland';
+    fire('rulesText');
+    release();
+    await tick();
+    await tick();
+    assert.equal(stored.settings.rulesText, '领域: Linux');
+    assert.equal($('rulesText').value, '领域: Wayland');
+    assert.equal($('applyRules').disabled, false);
+    assert.ok($('rulesApplyNote').textContent.includes('未应用'));
+  } finally { release(); chrome.runtime.sendMessage = original; }
+  $('applyRules').click();
+  await tick();
+  await tick();
+  assert.equal(stored.settings.rulesText, '领域: Wayland');
+  assert.equal($('applyRules').disabled, true);
+});
+
+test('模型保存期间切换服务商，界面与草稿不被旧回执切回', async () => {
+  const original = chrome.runtime.sendMessage;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  chrome.runtime.sendMessage = async msg => {
+    const result = await original(msg);
+    if (msg.type === 'save-settings') await gate;
+    return result;
+  };
+  try {
+    $('apiKey').value = 'submitted-key';
+    fire('apiKey');
+    $('applyModel').click();
+    await tick();
+    $('providerId').value = 'openai';
+    fire('providerId', 'change');
+    $('apiKey').value = 'new-provider-draft';
+    fire('apiKey');
+    release();
+    await tick();
+    await tick();
+    assert.equal($('providerId').value, 'openai');
+    assert.equal($('apiKey').value, 'new-provider-draft');
+    assert.equal($('applyModel').disabled, false);
+  } finally { release(); chrome.runtime.sendMessage = original; }
+});
+
+test('保存失败不启动翻译，草稿保留且用户能看到失败', async () => {
+  const original = chrome.runtime.sendMessage;
+  sent.length = 0;
+  chrome.runtime.sendMessage = msg => msg.type === 'save-settings'
+    ? Promise.resolve({ ok: false, error: { message: 'storage unavailable' } })
+    : original(msg);
+  try {
+    $('go').click();
+    await tick();
+    await tick();
+    assert.equal(sent.some(msg => msg.type === 'start-on-tab'), false);
+    assert.equal($('apiKey').value, 'new-provider-draft');
+    assert.equal($('applyModel').disabled, false);
+    assert.ok(document.body.textContent.includes('操作未完成'));
+  } finally { chrome.runtime.sendMessage = original; }
+});
+
+test('诊断无页面日志时仍能复制，权限取实际检查结果而非旧标签状态', async () => {
+  const original = chrome.tabs.sendMessage;
+  tabSent.length = 0;
+  permissionGranted = false;
+  chrome.tabs.sendMessage = async (tabId, msg) => {
+    tabSent.push({ tabId, msg });
+    return { ok: false };
+  };
+  try {
+    $('copyDiagnostics').click();
+    await tick();
+    await tick();
+    const report = JSON.parse(copiedText);
+    assert.equal(report.panel.hasPermission, false);
+    assert.equal(report.events[0].event, 'content-log-unavailable');
+    assert.deepEqual(tabSent.map(row => row.msg.type), ['get-diagnostics']);
+  } finally { chrome.tabs.sendMessage = original; permissionGranted = true; }
+});
+
+test('日志复制成功但清空失败仍报告已复制，不谎称已清空', async () => {
+  const original = chrome.tabs.sendMessage;
+  chrome.tabs.sendMessage = (tabId, msg) => msg.type === 'clear-diagnostics'
+    ? Promise.reject(new Error('tab closed')) : original(tabId, msg);
+  try {
+    $('copyDiagnostics').click();
+    await tick();
+    await tick();
+    assert.equal($('copyDiagnostics').dataset.feedbackLabel, '已复制');
+    assert.ok(document.body.textContent.includes('页面日志未能清空'));
+  } finally { chrome.tabs.sendMessage = original; }
+});
+
+test('权限检查乱序不把旧服务商权限用于新地址，申请仍在点击内发起', async () => {
+  const oldContains = chrome.permissions.contains;
+  const oldRequest = chrome.permissions.request;
+  const pending = [];
+  const requested = [];
+  chrome.permissions.contains = options => new Promise(resolve => pending.push({ options, resolve }));
+  chrome.permissions.request = options => { requested.push(options); return Promise.resolve(false); };
+  try {
+    $('providerId').value = 'openai';
+    fire('providerId', 'change');
+    $('providerId').value = 'deepseek';
+    fire('providerId', 'change');
+    assert.equal(pending.length, 2);
+    pending[1].resolve(false);
+    await tick();
+    pending[0].resolve(true);
+    await tick();
+    $('go').click();
+    assert.equal(requested.length, 1, '权限申请必须在 click 返回前发起');
+    assert.deepEqual(requested[0].origins, ['https://api.deepseek.com/*']);
+    await tick();
+  } finally {
+    for (const item of pending) item.resolve(false);
+    chrome.permissions.contains = oldContains;
+    chrome.permissions.request = oldRequest;
+  }
+});
+
 /* -------------------------------- 运行 -------------------------------- */
+
+test('切换用户语言更新所有界面分区，不保存模型草稿、不显示 Key', async () => {
+  const key = $('apiKey');
+  key.value = 'sk-unapplied-language-test';
+  fire('apiKey');
+  const savedKey = stored.settings.apiKey;
+  const rulesDraft = $('rulesText').value;
+  const model = $('model').value;
+  const selector = $('model');
+  $('targetLang').value = 'English';
+  fire('targetLang', 'change');
+  await tick();
+  await tick();
+  assert.equal(document.documentElement.lang, 'en');
+  assert.equal($('goText').textContent, 'Translate page');
+  assert.equal($('openSettings').title, 'Settings');
+  assert.match($('peekModel').textContent, /DeepSeek/);
+  assert.doesNotMatch($('providerHint').textContent, /\p{Script=Han}/u);
+  assert.equal($('model'), selector);
+  assert.equal($('model').value, model);
+  assert.equal(key.value, 'sk-unapplied-language-test');
+  assert.equal(key.type, 'password');
+  assert.equal(stored.settings.apiKey, savedKey);
+  assert.equal($('rulesText').value, rulesDraft);
+  assert.equal(stored.settings.targetLang, 'English');
+  assert.ok(!Object.hasOwn(stored.settings, 'userLanguage'), '不能另存一份重复语言状态');
+  $('targetLang').value = '简体中文';
+  fire('targetLang', 'change');
+  await tick();
+  assert.equal($('openSettings').title, '设置');
+  assert.equal(key.value, 'sk-unapplied-language-test');
+});
+
+test('其他用户语言使用明确的英文界面兜底，仍按所选语言保存', async () => {
+  $('targetLang').value = '日本語';
+  fire('targetLang', 'change');
+  await tick();
+  assert.equal(document.documentElement.lang, 'en');
+  assert.equal(stored.settings.targetLang, '日本語');
+  assert.match($('userLanguageNote').textContent, /interface currently uses English/);
+  $('targetLang').value = '简体中文';
+  fire('targetLang', 'change');
+  await tick();
+});
+
+test('正在显示的 Key 切换语言后仍显示 Hide，复制反馈恢复到当前界面语言', async () => {
+  $('reveal').click();
+  assert.equal($('apiKey').type, 'text');
+  $('targetLang').value = 'English';
+  fire('targetLang', 'change');
+  await tick();
+  assert.equal($('reveal').textContent, 'Hide');
+  $('reveal').click();
+  assert.equal($('apiKey').type, 'password');
+  $('targetLang').value = '简体中文';
+  fire('targetLang', 'change');
+  await tick();
+});
+
+test('模型列表迟到时不能污染已切换服务商的选择', async () => {
+  const original = chrome.runtime.sendMessage;
+  let release;
+  chrome.runtime.sendMessage = msg => msg.type === 'list-models'
+    ? new Promise(resolve => { release = resolve; }) : original(msg);
+  try {
+    $('providerId').value = 'openai';
+    fire('providerId', 'change');
+    await tick();
+    $('fetchModels').click();
+    await tick();
+    assert.equal($('fetchModels').disabled, true);
+    $('providerId').value = 'deepseek';
+    fire('providerId', 'change');
+    await tick();
+    const model = $('model').value;
+    release({ ok: true, ids: ['stale-other-provider'] });
+    await tick();
+    assert.equal($('model').value, model);
+    assert.ok(![...$('model').options].some(o => o.value === 'stale-other-provider'));
+    assert.equal($('fetchModels').disabled, false);
+  } finally { chrome.runtime.sendMessage = original; }
+});
+
+test('空列表与损坏模型清单不破坏现有选择或自定义入口', async () => {
+  const original = chrome.runtime.sendMessage;
+  try {
+    const selected = $('model').value;
+    for (const ids of [[], null, { bad: 'shape' }]) {
+      chrome.runtime.sendMessage = msg => msg.type === 'list-models'
+        ? Promise.resolve({ ok: true, ids }) : original(msg);
+      $('fetchModels').click();
+      await tick();
+      await tick();
+      assert.equal($('model').value, selected);
+      assert.ok([...$('model').options].some(o => o.value === '__jt_custom_model__'));
+      assert.equal($('fetchModels').disabled, false);
+    }
+  } finally { chrome.runtime.sendMessage = original; }
+});
+
+
+test('测试连接在设置页立即反馈，处理中即使派发重复事件也只调用一次', async () => {
+  const original = chrome.runtime.sendMessage;
+  let release, count = 0;
+  chrome.runtime.sendMessage = msg => msg.type === 'test-connection'
+    ? (count++, new Promise(resolve => { release = resolve; })) : original(msg);
+  try {
+    $('openSettings').click();
+    $('test').click();
+    assert.equal($('test').getAttribute('aria-busy'), 'true');
+    assert.equal($('test').dataset.feedbackLabel, '测试中…');
+    assert.equal($('homeView').hidden, true);
+    assert.equal($('actionNotice').closest('[hidden]'), null);
+    fire('test', 'click');
+    await tick();
+    assert.equal(count, 1);
+    release({ ok: true, echoed: 'ok' });
+    await tick();
+    assert.equal($('test').dataset.feedback, 'success');
+    assert.equal($('test').disabled, false);
+    assert.ok($('actionNotice').textContent.includes('连接正常'));
+  } finally { chrome.runtime.sendMessage = original; }
+});
+
+test('旧操作迟到时只更新自己的按钮，不覆盖较新操作的可见结果', async () => {
+  const original = chrome.runtime.sendMessage;
+  let release;
+  chrome.runtime.sendMessage = msg => msg.type === 'test-connection'
+    ? new Promise(resolve => { release = resolve; }) : original(msg);
+  try {
+    $('test').click(); await tick();
+    $('fetchModels').click(); await tick(); await tick();
+    const latest = $('actionNotice').textContent;
+    assert.ok(latest.includes('3 个模型'));
+    release({ ok: false, error: { message: 'delayed failure' } }); await tick();
+    assert.equal($('actionNotice').textContent, latest);
+    assert.equal($('test').dataset.feedback, 'error');
+  } finally { chrome.runtime.sendMessage = original; }
+});
+
+test('测试超时会解锁并显示原因，迟到成功不能改写超时结果', async () => {
+  const original = chrome.runtime.sendMessage;
+  const timeout = globalThis.setTimeout;
+  let release, expire;
+  globalThis.setTimeout = (fn, ms, ...args) => ms === 35000 ? (expire = fn, {}) : timeout(fn, ms, ...args);
+  chrome.runtime.sendMessage = msg => msg.type === 'test-connection'
+    ? new Promise(resolve => { release = resolve; }) : original(msg);
+  try {
+    $('test').click(); await tick();
+    expire(); await tick();
+    assert.equal($('test').disabled, false);
+    assert.equal($('test').dataset.feedback, 'error');
+    assert.match($('actionNotice').textContent, /超时/);
+    const message = $('actionNotice').textContent;
+    release({ ok: true, echoed: 'late' }); await tick();
+    assert.equal($('actionNotice').textContent, message);
+  } finally { globalThis.setTimeout = timeout; chrome.runtime.sendMessage = original; }
+});
+
+test('清缓存失败不清零计数，反馈不销毁独立计数节点', async () => {
+  const original = chrome.runtime.sendMessage;
+  const counter = $('cacheCount');
+  counter.textContent = '(143)';
+  chrome.runtime.sendMessage = msg => msg.type === 'clear-cache'
+    ? Promise.resolve({ ok: false, error: { message: 'storage unavailable' } }) : original(msg);
+  try {
+    $('clearCache').click(); await tick();
+    assert.equal($('cacheCount'), counter);
+    assert.equal(counter.textContent, '(143)');
+    assert.equal($('clearCache').dataset.feedback, 'error');
+    assert.match($('actionNotice').textContent, /storage unavailable/);
+    assert.equal($('clearCache').disabled, false);
+  } finally { chrome.runtime.sendMessage = original; }
+});
+
+test('权限拒绝也要在当前视图反馈，不能显示测试成功', async () => {
+  const original = chrome.permissions.request;
+  permissionGranted = false;
+  $('apiBase').value = 'https://feedback-test.example';
+  fire('apiBase');
+  chrome.permissions.request = async () => false;
+  try {
+    $('test').click(); await tick(); await tick();
+    assert.equal($('test').dataset.feedback, 'error');
+    assert.equal($('test').disabled, false);
+    assert.match($('actionNotice').textContent, /权限/);
+  } finally { chrome.permissions.request = original; permissionGranted = true; }
+});
+
+test('测试期间改模型，旧成功回执不能宣称新配置已通过', async () => {
+  const original = chrome.runtime.sendMessage;
+  let release;
+  chrome.runtime.sendMessage = msg => msg.type === 'test-connection'
+    ? new Promise(resolve => { release = resolve; }) : original(msg);
+  try {
+    $('test').click(); await tick();
+    $('apiBase').value = 'https://changed.example'; fire('apiBase');
+    release({ ok: true, echoed: 'ok' }); await tick();
+    assert.equal($('test').dataset.feedback, 'error');
+    assert.match($('actionNotice').textContent, /配置已改变/);
+  } finally { chrome.runtime.sendMessage = original; }
+});
+
+test('规则转换迟到时保留用户后续编辑，并明确提示重新转换', async () => {
+  const original = chrome.runtime.sendMessage;
+  let release;
+  chrome.runtime.sendMessage = msg => msg.type === 'convert-rules'
+    ? new Promise(resolve => { release = resolve; }) : original(msg);
+  try {
+    $('background').value = '原始要求'; fire('background');
+    $('convertRules').click(); await tick();
+    $('rulesText').value = '领域: 后续编辑'; fire('rulesText');
+    release({ ok: true, yaml: '领域: 迟到结果' }); await tick();
+    assert.equal($('rulesText').value, '领域: 后续编辑');
+    assert.match($('actionNotice').textContent, /已保留当前草稿/);
+    assert.equal($('convertRules').disabled, false);
+  } finally { chrome.runtime.sendMessage = original; }
+});
 
 await import(resolve(here, '../src/popup/popup.js'));
 await tick();

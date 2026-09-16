@@ -61,31 +61,35 @@
 }
 
 .byom-t[data-byom-role='ui'] {
-  font-size: 0.9em;
-  opacity: 0.92;
+  font-size: max(12px, 0.95em);
 }
 
 /* ---- 标记样式：切换只改 <html> 上的属性 ---- */
 
 html[data-byom-style='bar'] .byom-t,
-html:not([data-byom-style]) .byom-t {
+html:not([data-byom-style]) .byom-t,
+:host-context(html[data-byom-style='bar']) .byom-t,
+:host-context(html:not([data-byom-style])) .byom-t {
   border-left: 2px solid var(--byom-accent) !important;
   padding-left: 0.6em !important;
 }
 
-html[data-byom-style='underline'] .byom-t {
+html[data-byom-style='underline'] .byom-t,
+:host-context(html[data-byom-style='underline']) .byom-t {
   border-bottom: 1px dashed var(--byom-accent) !important;
   padding-bottom: 0.15em !important;
 }
 
-html[data-byom-style='tint'] .byom-t {
+html[data-byom-style='tint'] .byom-t,
+:host-context(html[data-byom-style='tint']) .byom-t {
   background: color-mix(in srgb, currentColor 7%, transparent) !important;
   padding: 0.15em 0.4em !important;
   border-radius: 4px !important;
 }
 
-html[data-byom-style='plain'] .byom-t {
-  opacity: 0.88;
+html[data-byom-style='plain'] .byom-t,
+:host-context(html[data-byom-style='plain']) .byom-t {
+  opacity: 1;
 }
 
 /*
@@ -127,11 +131,13 @@ html[data-byom-style='plain'] .byom-t {
 }
 
 /* 三态显示：仅原文藏译文；仅译文藏可安全隐藏的原文（元素级单元） */
-html[data-byom-display='original'] .byom-t {
+html[data-byom-display='original'] .byom-t,
+:host-context(html[data-byom-display='original']) .byom-t {
   display: none !important;
 }
 
-html[data-byom-display='translation'] [data-byom-src] {
+html[data-byom-display='translation'] [data-byom-src],
+:host-context(html[data-byom-display='translation']) [data-byom-src] {
   display: none !important;
 }
 
@@ -140,11 +146,13 @@ html[data-byom-display='translation'] [data-byom-src] {
   把容器字号压成 0 能一并收拾掉裸文本节点和行内子元素 —— 它们选不中，
   但都继承字号。译文自己用 attach 时记下的原始字号还原。
 */
-html[data-byom-display='translation'] [data-byom-src-in] {
+html[data-byom-display='translation'] [data-byom-src-in],
+:host-context(html[data-byom-display='translation']) [data-byom-src-in] {
   font-size: 0 !important;
 }
 
-html[data-byom-display='translation'] [data-byom-src-in] > .byom-t {
+html[data-byom-display='translation'] [data-byom-src-in] > .byom-t,
+:host-context(html[data-byom-display='translation']) [data-byom-src-in] > .byom-t {
   font-size: var(--byom-own-size, 15px) !important;
   margin-top: 0 !important;
 }
@@ -157,6 +165,6 @@ html[data-byom-display='translation'] [data-byom-src-in] > .byom-t {
 
 /*
   状态条与悬浮球的样式已经搬进 Shadow DOM（见 src/content/ui-css.js）。
-  这里只保留译文节点的样式 —— 译文必须留在正常 DOM 里才能被 Ctrl+F 搜到、
-  被复制、被朗读工具读到，所以它反过来需要继承页面排版，不能隔离。
+  这里只保留译文节点的样式。译文放在原文所属的 DOM 根中；开放组件通过共享的
+  adoptedStyleSheets 使用同一文件，不另建隔离层，也不复制显示模式等状态。
 */

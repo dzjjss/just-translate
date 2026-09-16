@@ -48,7 +48,9 @@ let preflightProfile = {
 };
 let chunkPrefix = '【译】';
 let nextPreflightGate = null;
+let nextPreflightResponse = null;
 let nextChunkGate = null;
+let nextChunkResponse = null;
 const initialConfigGate = deferred();
 let getConfigGate = initialConfigGate;
 
@@ -68,7 +70,9 @@ const chrome = {
         nextPreflightGate = null;
         if (gate) await gate.promise;
         else await tick(preflightDelay);
-        return { ok: true, profile, usage: { input: 100, output: 20 } };
+        const forced = nextPreflightResponse;
+        nextPreflightResponse = null;
+        return forced || { ok: true, profile, usage: { input: 100, output: 20 } };
       }
       if (msg.type === 'abort-session') return { ok: true };
       if (msg.type === 'translate-chunk') {
@@ -76,6 +80,9 @@ const chrome = {
         const gate = nextChunkGate;
         nextChunkGate = null;
         if (gate) await gate.promise;
+        const forced = nextChunkResponse;
+        nextChunkResponse = null;
+        if (forced) return typeof forced === 'function' ? forced(msg) : forced;
         return {
           ok: true,
           items: (msg.payload.items || []).map((it) => ({ i: it.i, t: prefix + it.text.slice(0, 8) })),
@@ -217,6 +224,41 @@ test('预检的 token 也计入用量', async () => {
   assert.ok(state.tokens.input >= 100, `预检的 100 input token 没有计入，当前 ${state.tokens.input}`);
 });
 
+test('翻译快照不混入预检 token，诊断同时给出两阶段和全页总量', async () => {
+  await send('clear-page');
+  document.querySelector('article').innerHTML = '<p>Wayland encodes and decodes messages.</p>';
+  nextPreflightResponse = {
+    ok: true, profile: { domain: ['Wayland'], risky: { 'encoding/decoding': 'serialization' } },
+    usage: { input: 839, output: 162 }, usageIncomplete: true,
+    runtime: { translateRequestCount: 2, requestReasons: { initial: 1, 'retry:rate-limit': 1 } }
+  };
+  nextChunkResponse = msg => ({
+    ok: true, items: msg.payload.items.map(item => ({ i: item.i, t: 'Wayland 对消息进行编码和解码。' })),
+    failed: [], usage: { input: 1701, output: 633 }, usageIncomplete: false,
+    runtime: { translateRequestCount: 1, requestReasons: { initial: 1 } }
+  });
+  await send('start', { config: { ...CONFIG, wholePageTranslation: true, semanticConsistency: true } });
+  await tick(300);
+  const state = await send('get-state');
+  assert.deepEqual(state.tokens, { input: 2540, output: 795, cachedUnits: 0 });
+  assert.deepEqual(state.translationRuntime.tokens, { input: 1701, output: 633 });
+  assert.equal(state.translationRuntime.usageIncomplete, false);
+  const runtime = state.consistencyTelemetry.runtime;
+  assert.deepEqual(runtime.translation.tokens, state.translationRuntime.tokens);
+  assert.deepEqual(runtime.preflight.sourceCoverage.risky.unmatched, ['encoding/decoding']);
+  assert.equal(runtime.preflight.sourceCoverage.risky.matched, 0);
+  const diagnostic = (await send('get-diagnostics')).diagnostic;
+  assert.deepEqual(diagnostic.usageByPhase, {
+    translate: { input: 1701, output: 633, incomplete: false },
+    preflight: { input: 839, output: 162, incomplete: true },
+    total: { input: 2540, output: 795, incomplete: true }
+  });
+  const profileEvent = diagnostic.events.find(row => row.event === 'preflight-result');
+  assert.deepEqual(profileEvent.details.runtime.requestReasons, { initial: 1, 'retry:rate-limit': 1 });
+  assert.equal(profileEvent.details.usageIncomplete, true);
+  assert.ok(!JSON.stringify(diagnostic).includes('serialization'), '诊断不能携带词义或正文');
+});
+
 test('广播快照带上大纲，面板开着时不会看到空树', async () => {
   await send('clear-page');
   calls.length = 0;
@@ -229,6 +271,27 @@ test('广播快照带上大纲，面板开着时不会看到空树', async () =>
   const withOutline = states.filter((c) => (c.payload.profileYaml || '').includes('compositor'));
   assert.ok(withOutline.length, '广播快照里没有大纲，面板会显示"已生成画像"配一棵空树');
   assert.ok(withOutline.every((c) => c.payload.hasProfile), 'hasProfile 与 profileYaml 不一致');
+});
+
+test('同页预检被后来请求替代时，丢弃旧画像但仍计入实际用量', async () => {
+  await startAuditPage();
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  const gate = deferred();
+  preflightProfile = { domain: ['superseded profile'] };
+  nextPreflightGate = gate;
+  const old = send('run-preflight');
+  await waitUntil(() => preflightCalls().length === 1);
+  preflightProfile = { domain: ['current profile'] };
+  const current = await send('run-preflight');
+  assert.equal(current.ok, true);
+  gate.resolve();
+  assert.equal((await old).code, 'stale');
+  const state = await send('get-state');
+  assert.match(state.profileYaml, /current profile/);
+  assert.doesNotMatch(state.profileYaml, /superseded profile/);
+  const diagnostic = (await send('get-diagnostics')).diagnostic;
+  assert.deepEqual(diagnostic.usageByPhase.preflight, { input: 200, output: 40, incomplete: false });
+  assert.ok(diagnostic.events.some(row => row.event === 'preflight-discarded' && row.details.reason === 'superseded-or-stopped'));
 });
 
 test('SPA 换页：预检摘要必须来自新页面的正文', async () => {
@@ -419,7 +482,7 @@ test('行内碎片合并后，送进 translate-chunk 的是完整句子', async 
   assert.equal(items.length, 2, `应当恰好两个完整单元：${JSON.stringify(items)}`);
 });
 
-test('整页优先：在 12k / 80 段安全范围内仍只发一个完整请求', async () => {
+test('整页优先：在 token 安全预算内仍只发一个完整请求', async () => {
   await send('clear-page');
   const source = Array.from(
     { length: 24 },
@@ -447,6 +510,9 @@ test('整页优先：在 12k / 80 段安全范围内仍只发一个完整请求'
   const state = await send('get-state');
   assert.equal(state.translationRuntime.translationMode, 'whole-page');
   assert.equal(state.translationRuntime.modeReason, 'within-safe-range');
+  assert.equal(state.translationRuntime.budgetMode, 'estimated-tokens');
+  assert.ok(state.translationRuntime.estimatedInputTokens > 0);
+  assert.ok(state.translationRuntime.estimatedOutputTokens > 0);
   assert.equal(state.translationRuntime.unitCount, 24);
   assert.equal(state.translationRuntime.translateRequestCount, 1);
 });
@@ -460,7 +526,370 @@ test('关掉自动预检时不发预检请求，也不该卡住翻译', async ()
   assert.ok(chunkCalls().length > 0, '关掉预检后翻译被卡住了');
 });
 
+test('一次性诊断只含结构化运行信息，复制成功后可清空当前事件', async () => {
+  const before = await send('get-diagnostics');
+  assert.equal(before.ok, true);
+  assert.equal(before.diagnostic.format, 'just-translate-diagnostic/v1');
+  assert.ok(before.diagnostic.translationRuntime, '运行统计被脱敏器误当成译文正文删掉了');
+  assert.equal(before.diagnostic.extraction.scope, 'top-document-open-shadow-dom');
+  assert.equal(before.diagnostic.extraction.completed, true);
+  assert.ok(before.diagnostic.extraction.candidateUnits > 0, '复制日志必须带实际提取快照');
+  assert.equal(typeof before.diagnostic.extraction.skippedCandidates, 'object', '过滤原因不能被脱敏器删掉');
+  assert.ok(before.diagnostic.events.some((row) => row.event === 'translate-request'));
+  assert.ok(before.diagnostic.events.some((row) => row.event === 'translate-result'));
+  const request = before.diagnostic.events.find((row) => row.event === 'translate-request');
+  const result = before.diagnostic.events.find((row) => row.event === 'translate-result' && row.details.requestId === request.details.requestId);
+  assert.ok(result, '并发请求与结果没有稳定 requestId，无法配对');
+  const json = JSON.stringify(before.diagnostic);
+  assert.ok(!json.includes('Wayland is a display server protocol'), '诊断包泄漏了页面正文');
+  assert.ok(!json.includes('【译】'), '诊断包泄漏了译文');
+
+  const cleared = await send('clear-diagnostics', {
+    logId: before.diagnostic.logId, throughSequence: before.diagnostic.throughSequence
+  });
+  assert.equal(cleared.ok, true);
+  const after = await send('get-diagnostics');
+  assert.deepEqual(after.diagnostic.events.map((row) => row.event), ['log-cleared', 'log-exported']);
+});
+
+test('被动读取只取快照，反复复制不会把真事件挤出环形日志', async () => {
+  const before = await send('get-diagnostics', { passive: true });
+  const events = before.diagnostic.events.map((row) => row.event);
+  const requestsBefore = calls.length;
+  for (let i = 0; i < 5; i++) await send('get-diagnostics', { passive: true });
+  const after = await send('get-diagnostics', { passive: true });
+  assert.deepEqual(after.diagnostic.events.map((row) => row.event), events, '被动读取往日志里记了事件');
+  assert.equal(calls.length, requestsBefore, '提取快照不应发起翻译或其他后台请求');
+  assert.deepEqual(after.diagnostic.extraction, before.diagnostic.extraction, '稳定页面的提取快照应相同');
+  assert.ok(after.diagnostic.translationRuntime, '被动读取拿到的仍应是完整快照');
+  const active = await send('get-diagnostics');
+  assert.equal(active.diagnostic.events.at(-1).event, 'log-exported', '一次性复制仍要留下交接水位');
+});
+
+test('缓存回填不进入 alignment 分母，并明确记录未观测单元数', async () => {
+  await send('clear-page');
+  document.querySelector('article').innerHTML =
+    '<p>Battery power remains low.</p><p>Reserve power remains low.</p>';
+  nextChunkResponse = (msg) => ({
+    ok: true,
+    items: msg.payload.items.map((item) => ({ i: item.i, t: '缓存译文', cached: true })),
+    failed: [],
+    runtime: { translateRequestCount: 0, splitRetryCount: 0, wholePageCacheHit: false }
+  });
+  await send('start', {
+    config: { ...CONFIG, autoPreflight: false, semanticConsistency: true, useCache: true }
+  });
+  await tick(250);
+
+  const state = await send('get-state');
+  assert.equal(state.consistencyTelemetry.summary.expectedOccurrences, 0);
+  assert.equal(state.consistencyTelemetry.summary.alignedOccurrences, 0);
+  assert.equal(state.consistencyTelemetry.summary.cachedUnitsExcludedFromObservation, 2);
+});
+
+test('失败批次把请求次数与已消耗 token 计入诊断，并用 requestId 对上原请求', async () => {
+  await send('clear-page');
+  document.querySelector('article').innerHTML = '<p>The cylinder opens over the pit.</p>';
+  nextChunkResponse = {
+    ok: false,
+    code: 'api-error',
+    error: { message: '模型没有返回可解析的 JSON', status: 0 },
+    usage: { input: 300, output: 120 },
+    runtime: { translateRequestCount: 3, splitRetryCount: 0, wholePageCacheHit: false }
+  };
+  await send('start', {
+    config: { ...CONFIG, autoPreflight: false, semanticConsistency: false, useCache: false }
+  });
+  await tick(250);
+
+  const state = await send('get-state');
+  assert.equal(state.failed, 1);
+  assert.equal(state.tokens.input, 300);
+  assert.equal(state.tokens.output, 120);
+  assert.equal(state.translationRuntime.translateRequestCount, 3);
+
+  const diagnostic = (await send('get-diagnostics')).diagnostic;
+  const failure = diagnostic.events.find((row) => row.event === 'translate-error');
+  const request = diagnostic.events.find((row) =>
+    row.event === 'translate-request' && row.details.requestId === failure.details.requestId
+  );
+  assert.ok(request);
+  assert.equal(failure.details.category, 'invalid-response');
+  assert.equal(failure.details.runtime.translateRequestCount, 3);
+  assert.equal(failure.details.usage.inputTokens, 300);
+});
+
 /* -------------------------------- 运行 -------------------------------- */
+
+async function waitUntil(predicate) {
+  for (let i = 0; i < 150; i++) {
+    if (await predicate()) return;
+    await tick(10);
+  }
+  throw new Error('等待状态超时');
+}
+
+async function startAuditPage(extra = {}) {
+  await send('stop');
+  await send('clear-page');
+  document.querySelector('article').innerHTML = '<p>Battery health and battery life matter for portable devices and their everyday use.</p>';
+  calls.length = 0;
+  await send('start', { config: { ...CONFIG, autoPreflight: false, skipSameScript: false, ...extra } });
+}
+
+test('英译英和中译中照常执行；不调用语言识别，也不出现源语言闸门', async () => {
+  chrome.i18n = { detectLanguage: () => { throw Error('Page language detection must stay removed'); } };
+  for (const [targetLang, text] of [['English', 'This page already uses English and must still enter translation.'],
+    ['简体中文', '这段正文已经是中文，用户点击后仍然进入所选引擎。']]) {
+    await send('stop');
+    await send('clear-page');
+    document.querySelector('article').innerHTML = `<p>${text}</p>`;
+    calls.length = 0;
+    await send('start', { config: { ...CONFIG, targetLang, autoPreflight: true } });
+    await waitUntil(async () => (await send('get-state')).done === 1);
+    assert.equal(preflightCalls().length, 1);
+    assert.equal(chunkCalls().length, 1);
+    assert.equal(chunkCalls()[0].payload.items[0].text, text);
+    const state = await send('get-state');
+    assert.ok(!Object.hasOwn(state, 'language'));
+    const hud = document.getElementById('byom-hud').shadowRoot;
+    assert.equal(hud.querySelector('[data-act="stop"]').textContent, targetLang === 'English' ? 'Retry' : '重翻');
+    const diagnostics = (await send('get-diagnostics')).diagnostic;
+    assert.equal(diagnostics.config.targetLang, targetLang);
+    assert.ok(!diagnostics.events.some(e => e.event === 'language-decision'));
+  }
+  delete chrome.i18n;
+});
+
+test('切目标语言重新预检，同语言同正文重翻才复用', async () => {
+  preflightProfile = { domain: ['battery'], preferred: { 'Battery health': '电池健康' } };
+  await startAuditPage({ autoPreflight: true });
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  assert.equal(preflightCalls().length, 1);
+  preflightProfile = { domain: ['battery'], preferred: { 'Battery health': 'Battery Health' } };
+  await send('config-changed', { config: { ...CONFIG, autoPreflight: true, skipSameScript: false, targetLang: 'English', semanticRevision: 'english-audit' } });
+  await waitUntil(() => preflightCalls().length === 2 && chunkCalls().length === 2);
+  assert.equal(chunkCalls().at(-1).payload.context.preflightSuggestions['Battery health'], 'Battery Health');
+  await send('restart-page');
+  await waitUntil(() => chunkCalls().length === 3);
+  assert.equal(preflightCalls().length, 2);
+});
+
+test('重复双击同一在途单元不重复发请求或计数', async () => {
+  await startAuditPage();
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  const node = document.querySelector('.byom-t');
+  const gate = deferred();
+  nextChunkGate = gate;
+  node.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
+  await waitUntil(() => chunkCalls().length === 2);
+  node.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true }));
+  await tick(20);
+  assert.equal(chunkCalls().length, 2);
+  gate.resolve();
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  assert.equal((await send('get-state')).total, 1);
+});
+
+test('停止再开始重新登记已有译文，不留下孤立单元', async () => {
+  await startAuditPage();
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  await send('stop');
+  await send('start', { config: { ...CONFIG, autoPreflight: false } });
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  assert.equal((await send('get-state')).total, 1);
+  assert.equal(document.querySelectorAll('.byom-t').length, 1);
+});
+
+test('仅译文模式在等待响应时停止会恢复原文', async () => {
+  const gate = deferred();
+  nextChunkGate = gate;
+  await startAuditPage({ displayMode: 'translation' });
+  await waitUntil(() => chunkCalls().length === 1);
+  await send('stop');
+  assert.equal(document.querySelectorAll('.byom-t').length, 0);
+  assert.equal(document.querySelectorAll('[data-byom-src], [data-byom-src-in]').length, 0);
+  gate.resolve();
+  await tick(20);
+  assert.equal(document.querySelectorAll('.byom-t').length, 0);
+});
+
+test('旧配置广播不能回滚新版本', async () => {
+  await startAuditPage({ configVersion: 20 });
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  const before = chunkCalls().length;
+  await send('config-changed', { config: { ...CONFIG, configVersion: 19, semanticRevision: 'obsolete' } });
+  await tick(30);
+  assert.equal(chunkCalls().length, before);
+});
+
+test('写入译文不触发正文重扫，正文变化仍触发', async () => {
+  await send('stop');
+  const { createMutationWatcher } = await import('../src/content/observer.js');
+  let dirty = 0;
+  const watcher = createMutationWatcher(() => dirty++, { debounceMs: 1 });
+  const node = document.querySelector('.byom-t');
+  watcher.start();
+  node.textContent = 'Updated translation.';
+  await tick(20);
+  assert.equal(dirty, 0);
+  document.querySelector('article p').firstChild.textContent = 'Updated original text.';
+  await waitUntil(() => dirty === 1);
+  watcher.stop();
+});
+
+test('纯删除退役原单元和孤立译文，计数随当前页面变化', async () => {
+  await startAuditPage();
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  document.querySelector('article p').remove();
+  await waitUntil(async () => (await send('get-state')).total === 0);
+  assert.equal(document.querySelectorAll('.byom-t').length, 0);
+});
+
+test('属性隐藏与恢复重新核对提取范围', async () => {
+  await startAuditPage();
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  const original = document.querySelector('article p');
+  original.hidden = true;
+  await waitUntil(async () => (await send('get-state')).total === 0);
+  original.hidden = false;
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  assert.equal(chunkCalls().length, 2);
+});
+
+test('响应快于 DOM 防抖时也不能提交过期原文译文', async () => {
+  const gate = deferred();
+  nextChunkGate = gate;
+  await startAuditPage();
+  await waitUntil(() => chunkCalls().length === 1);
+  document.querySelector('article p').firstChild.textContent = 'A changed source sentence needs a new translation.';
+  gate.resolve();
+  await tick(20);
+  assert.equal(document.querySelector('.byom-t')?.dataset.byomState, undefined);
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  assert.equal(chunkCalls().length, 2);
+});
+
+test('预检途中正文变化丢弃旧画像，只补一次新正文预检', async () => {
+  const gate = deferred();
+  nextPreflightGate = gate;
+  preflightProfile = { domain: ['old battery context'] };
+  await startAuditPage({ autoPreflight: true });
+  await waitUntil(() => preflightCalls().length === 1);
+  document.querySelector('article p').firstChild.textContent = 'A replacement article about display settings and desktop monitors.';
+  preflightProfile = { domain: ['new display context'] };
+  gate.resolve();
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  assert.equal(preflightCalls().length, 2);
+  assert.match(preflightCalls()[1].payload.digest, /replacement article/);
+  assert.equal(chunkCalls().length, 1);
+  assert.match(chunkCalls()[0].payload.items[0].text, /replacement article/);
+  assert.deepEqual(chunkCalls()[0].payload.context.profile.domain, ['new display context']);
+});
+
+test('后台失去会话时停止剩余队列并提示重新开始', async () => {
+  nextChunkResponse = { ok: false, code: 'session-expired', error: { message: '后台会话已失效，请重新开始翻译' } };
+  await startAuditPage();
+  await waitUntil(async () => (await send('get-state')).running === false);
+  const state = await send('get-state');
+  assert.equal(state.phase, 'error');
+  assert.match(state.message, /重新开始翻译/);
+  assert.equal(chunkCalls().length, 1);
+});
+
+test('仅译文模式的布局核对不会把自己隐藏的原文退役', async () => {
+  const style = document.createElement('style');
+  style.textContent = 'html[data-byom-display="translation"] [data-byom-src] { display:none !important; }';
+  document.head.append(style);
+  const prototype = dom.window.Element.prototype;
+  const previous = prototype.checkVisibility;
+  prototype.checkVisibility = function () { return getComputedStyle(this).display !== 'none'; };
+  try {
+    await startAuditPage({ displayMode: 'translation' });
+    await waitUntil(async () => (await send('get-state')).done === 1);
+    document.querySelector('article p').classList.add('ordinary-class');
+    await tick(500);
+    assert.equal((await send('get-state')).done, 1);
+    assert.equal(chunkCalls().length, 1);
+    assert.equal(document.documentElement.dataset.byomDisplay, 'translation');
+  } finally {
+    if (previous) prototype.checkVisibility = previous;
+    else delete prototype.checkVisibility;
+    style.remove();
+  }
+});
+
+test('正文连续变化最多补一次预检，之后用当前正文继续', async () => {
+  const first = deferred();
+  const second = deferred();
+  nextPreflightGate = first;
+  await startAuditPage({ autoPreflight: true });
+  await waitUntil(() => preflightCalls().length === 1);
+  nextPreflightGate = second;
+  document.querySelector('article p').firstChild.textContent = 'First replacement about a new topic and its details.';
+  first.resolve();
+  await waitUntil(() => preflightCalls().length === 2);
+  document.querySelector('article p').firstChild.textContent = 'Second replacement with the current content that should be translated.';
+  second.resolve();
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  assert.equal(preflightCalls().length, 2);
+  assert.equal(chunkCalls().length, 1);
+  assert.match(chunkCalls()[0].payload.items[0].text, /Second replacement/);
+  assert.equal((await send('get-state')).hasProfile, false);
+});
+
+test('开放组件正文参与整页请求、预检与诊断，内部双击只重翻该段', async () => {
+  await send('stop');
+  await send('clear-page');
+  document.querySelector('article').innerHTML = '<h1>Discussion Forum</h1><course-content></course-content>';
+  const shadow = document.querySelector('course-content').attachShadow({ mode: 'open' });
+  shadow.innerHTML = '<div class="d2l-html-block-rendered"><p>Please take notes during class.</p><p>Ask your peers for help.</p></div>';
+  calls.length = 0;
+  await send('start', { config: { ...CONFIG, wholePageTranslation: true } });
+  await waitUntil(async () => (await send('get-state')).done === 3);
+  assert.equal(preflightCalls().length, 1);
+  assert.match(preflightCalls()[0].payload.digest, /Please take notes during class/);
+  assert.equal(chunkCalls().length, 1);
+  assert.deepEqual(chunkCalls()[0].payload.items.map(item => item.text), [
+    'Discussion Forum', 'Please take notes during class.', 'Ask your peers for help.'
+  ]);
+  assert.equal(shadow.querySelectorAll('.byom-t[data-byom-state="done"]').length, 2);
+  const { diagnostic } = await send('get-diagnostics', { passive: true });
+  assert.equal(diagnostic.extraction.candidateUnits, 3);
+  assert.equal(diagnostic.extraction.existingTranslationUnits, 3);
+  const node = shadow.querySelector('.byom-t');
+  node.dispatchEvent(new dom.window.MouseEvent('dblclick', { bubbles: true, composed: true }));
+  await waitUntil(() => chunkCalls().length === 2);
+  assert.equal(chunkCalls()[1].payload.bypassCache, true);
+  assert.deepEqual(chunkCalls()[1].payload.items.map(item => item.text), ['Please take notes during class.']);
+  await waitUntil(async () => (await send('get-state')).done === 3);
+  await send('clear-page');
+  assert.equal(shadow.querySelectorAll('.byom-t,[data-byom-src]').length, 0);
+});
+
+test('组件重绘期间旧响应不能写回，移除宿主后会话释放内部单元', async () => {
+  await send('stop');
+  await send('clear-page');
+  document.querySelector('article').innerHTML = '<course-content></course-content>';
+  const host = document.querySelector('course-content');
+  const shadow = host.attachShadow({ mode: 'open' });
+  shadow.innerHTML = '<p>Original course instructions.</p>';
+  const gate = deferred();
+  nextChunkGate = gate;
+  calls.length = 0;
+  await send('start', { config: { ...CONFIG, autoPreflight: false } });
+  await waitUntil(() => chunkCalls().length === 1);
+  const oldNode = shadow.querySelector('.byom-t');
+  shadow.innerHTML = '<p>Replaced course instructions.</p>';
+  gate.resolve();
+  await waitUntil(async () => (await send('get-state')).done === 1);
+  assert.equal(oldNode.dataset.byomState, 'loading', '迟到结果不应写入旧节点');
+  assert.equal(chunkCalls().length, 2);
+  assert.equal(chunkCalls()[1].payload.items[0].text, 'Replaced course instructions.');
+  host.remove();
+  await waitUntil(async () => (await send('get-state')).total === 0);
+  await send('stop');
+});
 
 for (const [name, fn] of cases) {
   try {

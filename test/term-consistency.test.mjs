@@ -4,14 +4,27 @@ import {
   extractRepeatedSourceTerms,
   isHighConfidenceFixedForm,
   normalizeRenderedForComparison,
+  profileSourceCoverage,
   matchTrackedTermRows,
-  matchTrackedTerms
+  matchTrackedTerms,
+  selectTrackedTermRows
 } from '../src/content/term-consistency.js';
 import { buildMessages, parseTranslationResponse, promptFingerprint } from '../src/prompt/build.js';
 
 let failed = 0;
 const cases = [];
 const test = (name, fn) => cases.push([name, fn]);
+
+test('画像未匹配词形单独列出，不伪装成有覆盖，也不靠词干硬配', () => {
+  const profile = { preferred: { Wayland: 'Wayland' }, risky: {
+    'encoding/decoding': 'serialization', 'encodes and decodes': 'serialization', display: 'screen'
+  } };
+  const coverage = profileSourceCoverage(profile, [{ text: 'Wayland encodes and decodes messages.' }, { text: 'displays' }]);
+  assert.deepEqual(coverage.preferred, { total: 1, matched: 1, unmatched: [] });
+  assert.deepEqual(coverage.risky, { total: 3, matched: 1, unmatched: ['encoding/decoding', 'display'] });
+  assert.equal(coverage.scope, 'current-translation-units');
+  assert.equal(profileSourceCoverage(profile, []).preferred.matched, 0);
+});
 
 test('格式只认内部大小写/混合数字为高置信 identifier；普通 ALL CAPS 不再直接 FIXED', () => {
   for (const x of ['Learn', 'Open', 'Check', 'Use', 'Charge', 'Enable', 'Low', 'Power', 'Mode', 'Usage', 'Ogilvy']) {
@@ -50,6 +63,19 @@ test('人称代词缩写属于停用词，不进入多义一致性候选', () =>
   for (const token of ["you'll", "you're", "we'll"]) {
     assert.equal(lemmas.has(token), false, `${token} 不应进入语义一致性候选`);
   }
+});
+
+test('长文高频功能词不占 lexical 预算，内容词仍可观测', () => {
+  const terms = extractRepeatedSourceTerms([
+    { text: 'All of them went out and down towards the black pit.' },
+    { text: 'All of them came back across the black pit.' }
+  ], { maxTerms: 100 });
+  const lemmas = new Set(terms.map((row) => row.lemma));
+  for (const token of ['all', 'out', 'down', 'towards', 'back', 'across']) {
+    assert.equal(lemmas.has(token), false, `${token} 不应挤占 lexical 预算`);
+  }
+  assert.equal(lemmas.has('black'), true);
+  assert.equal(lemmas.has('pit'), true);
 });
 
 test('小说全大写标题词与罗马数字只归 STRUCTURAL，不进入术语 FIXED', () => {
@@ -110,6 +136,76 @@ test('每批发送当前真实 surface；lexical identity 仍按 lemma 合并', 
     matchTrackedTerms(candidates, [{ text: 'The tasks are ongoing. This is a common belief.' }], { maxTerms: 50 }),
     rows.map((x) => x.term)
   );
+});
+
+test('整页预检建议不会挤掉 lexical 观测；32 条预算固定预留 8 席', () => {
+  const suggested = Array.from({ length: 22 }, (_, i) => ({
+    term: `Suggested${i + 1}`,
+    lemma: `suggested${i + 1}`,
+    kind: 'suggested',
+    trust: 'SUGGESTED'
+  }));
+  const lexical = Array.from({ length: 12 }, (_, i) => ({
+    term: `lexical${i + 1}`,
+    lemma: `lexical${i + 1}`,
+    kind: 'lexical',
+    trust: 'OBSERVED'
+  }));
+  const text = [...suggested, ...lexical].map((row) => row.term).join(' ');
+  const rows = selectTrackedTermRows([...suggested, ...lexical], [{ text }], {
+    maxTerms: 32,
+    minLexicalTerms: 8
+  });
+  assert.equal(rows.length, 32);
+  assert.equal(rows.filter((row) => row.kind === 'suggested').length, 22);
+  assert.equal(rows.filter((row) => row.kind === 'lexical').length, 10);
+});
+
+test('预检 risky 即使是停用词也能显式进入观测，且不装成固定译名', () => {
+  const candidates = [
+    { term: 'common', lemma: 'common', kind: 'risky', trust: 'SUGGESTED' },
+    ...extractRepeatedSourceTerms([
+      { text: 'They crossed the common before sunset.' },
+      { text: 'A common belief spread quickly.' }
+    ], { maxTerms: 100 })
+  ];
+  const matched = selectTrackedTermRows(candidates, [{ text: 'They crossed the common.' }], {
+    maxTerms: 8,
+    minLexicalTerms: 2
+  });
+  const common = matched.find((row) => row.lemma === 'common');
+  assert.equal(common?.kind, 'risky');
+
+  const telemetry = createTermTelemetry();
+  telemetry.record({
+    unit: { id: 1, text: 'They crossed the common.' },
+    translation: '他们穿过了公地。',
+    alignments: { common: '公地' },
+    candidates: matched
+  });
+  const row = telemetry.snapshot().rows.find((item) => item.lemma === 'common');
+  assert.equal(row.kind, 'risky');
+  assert.equal(row.taxonomy, 'STABLE');
+  assert.deepEqual(row.evidence, ['PREFLIGHT_RISKY_SENSE']);
+});
+
+test('prompt 可以携带 22 条预检建议与最多 32 个对齐候选', () => {
+  const suggestions = Object.fromEntries(Array.from({ length: 22 }, (_, i) => [`Suggested${i + 1}`, `建议${i + 1}`]));
+  const trackedTerms = Array.from({ length: 40 }, (_, i) => `tracked${i + 1}`);
+  const built = buildMessages({
+    items: [{ i: 1, text: 'A test sentence.' }],
+    context: {},
+    presetId: 'general',
+    targetLang: '简体中文',
+    customPrompt: '',
+    background: '',
+    profile: null,
+    preflightSuggestions: suggestions,
+    trackedTerms
+  });
+  assert.ok(built.system.includes('Suggested22 ≈ 建议22'));
+  assert.ok(built.user.includes('tracked32'));
+  assert.equal(built.user.includes('tracked33'), false);
 });
 
 test('显式 locked 与自动候选同名时只发送 locked 一份', () => {
@@ -178,6 +274,35 @@ test('目标侧包含关系不再参与语义分类', () => {
   assert.equal(snap.rows[0].taxonomy, 'UNKNOWN');
   assert.deepEqual(snap.rows[0].evidence, ['MULTIPLE_TARGET_VARIANTS']);
   assert.equal(snap.summary.compositional, 0, '旧字段保留但新 taxonomy 不再产出 COMPOSITIONAL');
+});
+
+test('画像词跨义项出现时保留两种译法，不强制统一；重复 UI 标签仍可报告稳定', () => {
+  const telemetry = createTermTelemetry();
+  const candidates = [
+    { term: 'stuttering', lemma: 'stuttering', kind: 'risky', trust: 'SUGGESTED' },
+    { term: 'power', lemma: 'power', kind: 'suggested', trust: 'SUGGESTED' },
+    { term: 'Low Power Mode', lemma: 'low power mode', kind: 'suggested', trust: 'SUGGESTED' }
+  ];
+  const examples = [
+    ['stuttering frames', '画面卡顿', { stuttering: '卡顿' }],
+    ['stuttering in speech', '说话口吃', { stuttering: '口吃' }],
+    ['reduce power consumption', '降低耗电量', { power: '电' }],
+    ['the power to approve', '批准的权力', { power: '权力' }],
+    ['Enable Low Power Mode.', '启用低电量模式。', { 'Low Power Mode': '低电量模式' }],
+    ['Disable Low Power Mode.', '关闭低电量模式。', { 'Low Power Mode': '低电量模式' }]
+  ];
+  examples.forEach(([text, translation, alignments], id) => telemetry.record({
+    unit: { id, text }, translation, alignments, candidates
+  }));
+  const snapshot = telemetry.snapshot();
+  for (const lemma of ['stuttering', 'power']) {
+    const row = snapshot.rows.find(item => item.lemma === lemma);
+    assert.equal(row.variantCount, 2);
+    assert.equal(row.taxonomy, 'UNKNOWN');
+    assert.equal(row.consistency, 'UNRESOLVED');
+  }
+  assert.equal(snapshot.rows.find(item => item.lemma === 'low power mode').taxonomy, 'STABLE');
+  assert.equal(snapshot.summary.fixedDrift, 0);
 });
 
 test('即使候选携带旧 source containment 元数据，也不再确认 COMPOSITIONAL', () => {

@@ -7,6 +7,17 @@ const test = (name, fn) => cases.push([name, fn]);
 
 const power = { term: 'power', lemma: 'power', kind: 'lexical' };
 
+test('关闭先例时使用无可变状态的空实现', () => {
+  const a = createSemanticMemory({ enabled: false });
+  const b = createSemanticMemory({ enabled: false });
+  assert.equal(a, b);
+  a.observe({ unit: { text: 'battery power' }, translation: '电量', alignments: { power: '电量' }, candidates: [power] });
+  a.recordHintOutcomes({});
+  assert.deepEqual(a.hintsFor({}), []);
+  assert.equal(a.stats().observations, 0);
+  assert.deepEqual(a.snapshot().rows, []);
+});
+
 test('context trigger 会把 battery power 与 Power Mode 分成不同作用域', () => {
   const a = contextTrigger('Wi-Fi uses less battery power than cellular networks.', 'power');
   const b = contextTrigger('Open Settings, tap Battery, and then tap Power Mode.', 'Power');

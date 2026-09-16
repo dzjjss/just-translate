@@ -145,10 +145,67 @@ test('popup 的语义一致性观测位于主层级，默认功能保留数据�
   assert.ok(pos > homeStart && pos < settingsStart, '语义一致性观测必须直接位于首页，而不是设置视图里');
 });
 
+test('一次性诊断位于高级维护区，并明确复制后清空与隐私边界', () => {
+  const html = fs.readFileSync(path.join(SRC, 'popup/popup.html'), 'utf8');
+  const tools = html.slice(html.indexOf('data-panel="tools"'));
+  assert.ok(tools.includes('id="copyDiagnostics"'));
+  assert.ok(tools.includes('成功复制后清空已复制事件'));
+  assert.ok(tools.includes('保留期间的新事件'));
+  assert.ok(tools.includes('不含 Key、页面正文、Prompt 或接口响应正文'));
+});
+
+test('验收日志有独立入口，并说明跨回收保留与不自动清空', () => {
+  const html = fs.readFileSync(path.join(SRC, 'popup/popup.html'), 'utf8');
+  const tools = html.slice(html.indexOf('data-panel="tools"'));
+  assert.ok(tools.includes('id="copyAcceptance"'), '缺少验收日志复制入口');
+  assert.ok(tools.includes('id="clearAcceptance"'), '清空必须是显式动作，不能只靠复制顺带清');
+  assert.ok(tools.includes('service worker 回收保留'));
+  assert.ok(tools.includes('复制不清空任何一侧'));
+  const popup = source(path.join(SRC, 'popup/popup.js'));
+  assert.ok(popup.includes('copyAcceptanceLog') && popup.includes('clearAcceptanceLog'));
+});
+
+test('维护区的跨列由布局类负责，语义类不得兼职布局', () => {
+  const css = fs.readFileSync(path.join(SRC, 'popup/popup.css'), 'utf8');
+  assert.ok(css.includes('.action-grid .span-all { grid-column: 1 / -1; }'));
+  assert.doesNotMatch(css, /\.action-grid \.(diagnostic-copy|danger-soft) \{[^}]*grid-column/,
+    'diagnostic-copy / danger-soft 又开始兼职跨列，加按钮时会被意外拉成整行');
+  const html = fs.readFileSync(path.join(SRC, 'popup/popup.html'), 'utf8');
+  assert.ok(/id="copyAcceptance" class="ghost"/.test(html), '验收按钮不应带跨列类，两个按钮并排一行');
+});
+
+test('工具区的动作必须在按钮自身给反馈，主状态栏在首页视图里看不见', () => {
+  const popup = source(path.join(SRC, 'popup/popup.js'));
+  assert.ok(popup.includes('createActionFeedback'));
+  assert.ok(popup.includes('feedback.run($(id), action, actionOptions(id))'));
+  for (const id of ['copyDiagnostics', 'copyAcceptance', 'clearAcceptance']) {
+    assert.ok(popup.includes(`bindAction('${id}'`), `${id} 只调了 setStatus，用户在设置视图里看不到任何反馈`);
+  }
+});
+
+test('验收日志的读取是被动的，不得改写它正在读的页面日志', () => {
+  const diagnostics = source(path.join(SRC, 'popup/diagnostics.js'));
+  assert.ok(diagnostics.includes('passive: true'));
+  const main = source(path.join(SRC, 'content/main.js'));
+  assert.ok(main.includes('if (!payload?.passive)'), '被动读取仍会记 log-exported，复制几次就把真事件挤掉');
+});
+
+test('验收日志只由后台写入，内容脚本与面板都不得直接改它', () => {
+  const forbidden = files.filter((file) => !rel(file).endsWith('background/event-log.js'))
+    .filter((file) => /lifecycleLog/.test(source(file)));
+  assert.deepEqual(forbidden.map(rel), [], '验收日志的存储键出现在 event-log.js 之外');
+  const router = source(path.join(SRC, 'background/router.js'));
+  assert.ok(router.includes('MSG.GET_LIFECYCLE_LOG'));
+  const panelOnly = router.match(/const PANEL_ONLY = new Set\(\[([\s\S]*?)\]\);/)?.[1] || '';
+  for (const key of ['MSG.GET_LIFECYCLE_LOG', 'MSG.CLEAR_LIFECYCLE_LOG']) {
+    assert.ok(panelOnly.includes(key), `${key} 必须限制为面板发起`);
+  }
+});
+
 
 test('预检快照默认跨重翻复用，只有显式重新读取才 force 刷新', () => {
   const main = source(path.join(SRC, 'content/main.js'));
-  assert.ok(main.includes("if (!force && app.preflightSnapshot?.url === url)"), '普通重翻没有复用同 URL 预检快照');
+  assert.ok(main.includes("if (!force && app.preflightSnapshot?.identity === identity)"), '普通重翻须复用相同语言与正文身份的快照');
   assert.ok(main.includes("preflight(page, { force: true })"), '显式重新读取没有 bypass 快照');
   assert.ok(main.includes('preflightHash'), '页面状态没有暴露预检 hash，A/B 无法核对规则集是否一致');
 });
@@ -175,13 +232,13 @@ test('popup 设置生命周期：普通开关即时保存，只有模型与规�
   assert.ok(popup.includes('LIVE_BOOL_FIELDS'));
   assert.ok(html.includes('id="wholePageTranslation"'));
   assert.ok(html.includes('优先整页翻译'));
-  assert.ok(html.includes('不同模型限制不同'));
+  assert.ok(html.includes('按预计输入与输出 token 自动判断'));
   assert.ok(html.includes('超限自动分块'));
   assert.ok(html.includes('id="copyApiKey"'), 'API Key 缺少显式复制按钮');
   assert.ok(html.includes('id="semanticPrecedent"'));
   assert.ok(html.includes('Beta：跨批先例注入'));
-  assert.ok(popup.includes("markDirty('model')"));
-  assert.ok(popup.includes("markDirty('rules')"));
+  assert.ok(popup.includes("refreshDraft('model')"));
+  assert.ok(popup.includes("refreshDraft('rules')"));
 });
 
 test('模型草稿测试走 panel-only 白名单 override，不必先污染 active 配置', () => {

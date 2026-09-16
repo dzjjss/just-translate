@@ -1,11 +1,14 @@
 import { MSG } from '../shared/constants.js';
-import { getSettings, isConfigured, toRuntimeConfig } from '../shared/settings.js';
+import { getSettings, isConfigured, persistSettingsPatch, semanticRevision, toRuntimeConfig } from '../shared/settings.js';
 import { hasApiPermission } from '../shared/permissions.js';
 import { toPlainError, log } from '../shared/logger.js';
+import { classifyDiagnosticError } from '../shared/diagnostics.js';
 import { ensureContent, isInjectable, pingTab } from './injector.js';
 import { abortSession, convertRules, fetchModels, runPreflight, testConnection, translateChunk } from './translator.js';
 import { cacheStats, clearCache, flush } from './cache.js';
 import { getProvider } from './providers/index.js';
+import { openSession, sessionRecord, abortTab, workerEpoch } from './sessions.js';
+import { clearLifecycleLog, lifecycleSnapshot, recordLifecycle } from './event-log.js';
 
 /** 页面上双击译文时留下的原文，供面板的试译台取材 */
 let labSample = '';
@@ -24,6 +27,15 @@ async function getTab(tabId, sender) {
   return tab;
 }
 
+
+/** 只记数字而不记原因，事后就无法判断这 7 个单元是超时、限流还是响应格式坏了。 */
+function chunkFailureCategory(res) {
+  if (!res.failed?.length) return '';
+  if (res.runtime?.sourceLimitFailedUnits) return 'source-limit';
+  if (res.runtime?.invalidResponseFailedUnits) return 'invalid-response';
+  if (res.error) return classifyDiagnosticError(res.error.message, res.error.status);
+  return 'missing-items';
+}
 
 function settingsWithPanelOverride(base, override = {}, extra = {}) {
   const allowed = ['providerId', 'apiBase', 'apiKey', 'model'];
@@ -51,10 +63,79 @@ async function preflight(tab) {
 
 /** 每个 tab 的 session 独立编号，取消一个不会影响另一个正在翻译的页面 */
 function sessionKey(sender, sessionId) {
+  if (typeof sessionId !== 'string' || !/^[a-zA-Z0-9:._-]{1,128}$/.test(sessionId)) throw new Error('无效会话标识');
   return `${sender?.tab?.id ?? 0}:${sessionId}`;
 }
 
+function validateItems(items) {
+  if (!Array.isArray(items) || !items.length || items.length > 160) throw new Error('无效翻译批次');
+  const ids = new Set();
+  for (const item of items) {
+    if (!Number.isSafeInteger(item?.i) || ids.has(item.i) || typeof item.text !== 'string') throw new Error('无效单元或重复 ID');
+    ids.add(item.i);
+  }
+}
+
+async function authorizedSession(sender, sessionId) {
+  const key = sessionKey(sender, sessionId);
+  const record = sessionRecord(key);
+  const settings = await record.settings;
+  sessionRecord(key, record);
+  const permitted = await hasApiPermission(settings.apiBase);
+  sessionRecord(key, record);
+  if (!permitted) {
+    abortSession(key);
+    throw Object.assign(new Error('API 访问权限已撤回，请重新授权'), { reasonCode: 'no-permission' });
+  }
+  return { key, settings };
+}
+
+function requestFailure(error) {
+  const code = error.reasonCode || (error.name === 'AbortError' ? 'aborted' : 'api-error');
+  return { ok: false, code, workerEpoch, error: toPlainError(error), usage: error.usage || null,
+    usageIncomplete: error.usageIncomplete ?? true, runtime: error.runtime || null };
+}
+
+function recordRequestFailure(event, failure, payload, sender, requestStarted) {
+  let session = '';
+  try { session = sessionKey(sender, payload.sessionId); } catch { /* invalid input has no session */ }
+  void recordLifecycle(event, { session, epoch: workerEpoch, code: failure.code,
+    requests: failure.runtime?.translateRequestCount ?? (requestStarted ? null : 0),
+    requestReasons: failure.runtime?.requestReasons || {},
+    usageIncomplete: failure.usageIncomplete,
+    failureCategory: classifyDiagnosticError(failure.error.message, failure.error.status) });
+}
+
 export const handlers = {
+  async [MSG.SAVE_SETTINGS]({ patch }) {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('无效设置');
+    return { ok: true, settings: await persistSettingsPatch(patch) };
+  },
+
+  async [MSG.OPEN_SESSION](payload, sender) {
+    if (payload.resumeFrom === workerEpoch || (sender?.documentLifecycle && sender.documentLifecycle !== 'active')) {
+      void recordLifecycle('session-expired', { epoch: workerEpoch, resumeMatched: payload.resumeFrom === workerEpoch });
+      return { ok: false, code: 'session-expired', workerEpoch, error: { message: '会话已停止，请重新开始翻译' } };
+    }
+    const key = sessionKey(sender, payload.sessionId);
+    const record = openSession(key);
+    if (!record.settings) record.settings = getSettings();
+    const settings = await record.settings;
+    sessionRecord(key, record);
+    const configured = isConfigured(settings, getProvider(settings.providerId));
+    const permitted = configured && await hasApiPermission(settings.apiBase);
+    sessionRecord(key, record);
+    if (!permitted) {
+      abortSession(key);
+      return { ok: false, code: 'not-configured', error: { message: '请检查翻译引擎配置及访问权限' } };
+    }
+    if (payload.semanticRevision && payload.semanticRevision !== semanticRevision(settings)) {
+      abortSession(key);
+      return { ok: false, code: 'config-changed', error: { message: '配置已变化，请重新开始翻译' } };
+    }
+    void recordLifecycle('session-open', { session: key, epoch: workerEpoch });
+    return { ok: true, workerEpoch };
+  },
   async [MSG.QUERY_TAB]({ tabId }, sender) {
     const tab = await getTab(tabId, sender);
     const settings = await getSettings();
@@ -98,6 +179,8 @@ export const handlers = {
     const text = String(payload.text || '').trim();
     if (!text) return { ok: false, error: { message: '先填一段原文' } };
 
+    const labSession = `lab:${Date.now()}:${Math.random()}`;
+    openSession(labSession);
     try {
       const res = await translateChunk({
         items: [{ i: 1, text }],
@@ -109,7 +192,7 @@ export const handlers = {
           profile: payload.profile || null
         },
         settings,
-        sessionId: 'lab',
+        sessionId: labSession,
         bypassCache: true // 调试永远要看模型这次实际怎么翻，不能给缓存
       });
       const hit = (res.items || []).find((x) => x.i === 1);
@@ -117,6 +200,8 @@ export const handlers = {
       return { ok: true, text: hit.t, usage: res.usage };
     } catch (e) {
       return { ok: false, error: toPlainError(e) };
+    } finally {
+      abortSession(labSession);
     }
   },
 
@@ -140,6 +225,8 @@ export const handlers = {
   async [MSG.STOP_ON_TAB]({ tabId }, sender) {
     const tab = await getTab(tabId, sender);
     if (!tab) return { ok: false };
+    // Stop network work even when the content script cannot answer.
+    abortTab(tab.id);
     await chrome.tabs.sendMessage(tab.id, { type: MSG.STOP }).catch(() => {});
     return { ok: true };
   },
@@ -152,19 +239,35 @@ export const handlers = {
   },
 
   async [MSG.TRANSLATE_CHUNK](payload, sender) {
-    const settings = await getSettings();
+    let requestStarted = false;
     try {
+      validateItems(payload.items);
+      const { settings, key } = await authorizedSession(sender, payload.sessionId);
+      requestStarted = true;
       const res = await translateChunk({
         items: payload.items,
         context: payload.context || {},
         bypassCache: Boolean(payload.bypassCache),
         settings,
-        sessionId: sessionKey(sender, payload.sessionId)
+        sessionId: key
+      });
+      void recordLifecycle('translate-chunk', {
+        session: key, epoch: workerEpoch,
+        unitCount: payload.items.length,
+        requests: res.runtime?.translateRequestCount ?? null,
+        requestReasons: res.runtime?.requestReasons || {},
+        usageIncomplete: Boolean(res.usageIncomplete),
+        wholePageCacheHit: res.runtime?.wholePageCacheHit ?? null,
+        failed: res.failed?.length || 0,
+        sourceLimitFailedUnits: res.runtime?.sourceLimitFailedUnits || 0,
+        invalidResponseFailedUnits: res.runtime?.invalidResponseFailedUnits || 0,
+        failureCategory: chunkFailureCategory(res)
       });
       return { ok: true, ...res };
     } catch (e) {
-      if (e?.name === 'AbortError') return { ok: false, code: 'aborted', error: { message: '已取消' } };
-      return { ok: false, code: 'api-error', error: toPlainError(e) };
+      const failure = requestFailure(e);
+      recordRequestFailure('translate-failed', failure, payload, sender, requestStarted);
+      return failure;
     }
   },
 
@@ -172,6 +275,7 @@ export const handlers = {
     const stopped = abortSession(sessionKey(sender, payload.sessionId));
     await flush();
     log('中止 session', stopped);
+    void recordLifecycle('session-abort', { session: sessionKey(sender, payload.sessionId), epoch: workerEpoch, stopped });
     return { ok: true, stopped };
   },
 
@@ -205,16 +309,14 @@ export const handlers = {
   async [MSG.SAVE_FAB_OFFSET]({ offset }) {
     const n = Number(offset);
     if (!Number.isFinite(n) || n < 0 || n > 100) return { ok: false };
-    const settings = await getSettings();
-    await chrome.storage.local.set({ settings: { ...settings, floatOffset: Math.round(n) } });
+    await persistSettingsPatch({ floatOffset: Math.round(n) });
     return { ok: true };
   },
 
   /** 页面上切换显示模式后写回设置，下一页打开保持同一偏好 */
   async [MSG.SAVE_DISPLAY_MODE]({ mode }) {
     if (!['bilingual', 'translation', 'original'].includes(mode)) return { ok: false };
-    const settings = await getSettings();
-    await chrome.storage.local.set({ settings: { ...settings, displayMode: mode } });
+    await persistSettingsPatch({ displayMode: mode });
     return { ok: true };
   },
 
@@ -245,19 +347,37 @@ export const handlers = {
   },
 
   async [MSG.PREFLIGHT](payload, sender) {
-    const settings = await getSettings();
+    let requestStarted = false;
     try {
+      const { settings, key } = await authorizedSession(sender, payload.sessionId);
+      requestStarted = true;
       const res = await runPreflight({
         digest: payload.digest,
         context: payload.context || {},
         settings,
-        sessionId: sessionKey(sender, payload.sessionId)
+        sessionId: key,
+        identity: payload.identity,
+        force: Boolean(payload.force)
       });
+      void recordLifecycle('preflight', { session: key, epoch: workerEpoch,
+        reused: Boolean(res.reused), cacheSource: res.cacheSource || 'fresh',
+        requestReasons: res.runtime?.requestReasons || {}, usageIncomplete: Boolean(res.usageIncomplete),
+        requests: res.runtime?.translateRequestCount ?? (res.reused ? 0 : null) });
       return { ok: true, ...res };
     } catch (e) {
-      if (e?.name === 'AbortError') return { ok: false, code: 'aborted', error: { message: '已取消' } };
-      return { ok: false, code: 'api-error', error: toPlainError(e) };
+      const failure = requestFailure(e);
+      recordRequestFailure('preflight-failed', failure, payload, sender, requestStarted);
+      return failure;
     }
+  },
+
+  async [MSG.GET_LIFECYCLE_LOG]() {
+    return { ok: true, lifecycle: await lifecycleSnapshot({ epoch: workerEpoch,
+      version: chrome.runtime.getManifest?.().version || 'unknown' }) };
+  },
+
+  async [MSG.CLEAR_LIFECYCLE_LOG]() {
+    return { ok: await clearLifecycleLog({ epoch: workerEpoch }) };
   },
 
   // 翻译期间页面每 20 秒敲一次，把 service worker 的空闲计时器顶回去。
@@ -331,6 +451,7 @@ export const handlers = {
  * 判据是 sender.tab：面板没有 tab，内容脚本一定有。
  */
 const PANEL_ONLY = new Set([
+  MSG.SAVE_SETTINGS,
   MSG.QUERY_TAB,
   MSG.STOP_ON_TAB,
   MSG.TOGGLE_ON_TAB,
@@ -342,17 +463,21 @@ const PANEL_ONLY = new Set([
   MSG.LAB_TRANSLATE,
   MSG.CLEAR_CACHE,
   MSG.CACHE_STATS,
+  MSG.GET_LIFECYCLE_LOG,
+  MSG.CLEAR_LIFECYCLE_LOG,
 ]);
 
-export function installRouter() {
+export function installRouter(ready = Promise.resolve()) {
+  const initialized = ready.then(() => null, error => toPlainError(error));
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!Object.hasOwn(handlers, msg?.type)) return false;
     const handler = handlers[msg?.type];
     if (!handler) return false;
     if (sender?.tab && PANEL_ONLY.has(msg.type)) {
       sendResponse({ ok: false, code: 'forbidden', error: { message: '该操作只能从扩展面板发起' } });
       return false;
     }
-    Promise.resolve(handler(msg.payload || {}, sender))
+    initialized.then(error => error ? { ok: false, code: 'startup-failed', error } : handler(msg.payload || {}, sender))
       .then(sendResponse)
       .catch((e) => sendResponse({ ok: false, error: toPlainError(e) }));
     return true; // 异步应答
