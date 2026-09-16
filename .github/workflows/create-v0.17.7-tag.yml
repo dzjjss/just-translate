@@ -1,0 +1,22 @@
+name: Create v0.17.7 tag
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create lightweight release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: 8857d7b645701893693d83e41b987dd3aab90767
+        run: |
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/v0.17.7" \
+            -f sha="${TARGET_SHA}"
